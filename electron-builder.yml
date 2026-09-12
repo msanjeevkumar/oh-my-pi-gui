@@ -1,5 +1,6 @@
 appId: sh.omp.gui
 productName: omp
+executableName: omp-gui
 directories:
   buildResources: resources
   output: dist
@@ -58,12 +59,17 @@ nsis:
   deleteAppDataOnUninstall: false
 
 linux:
+  artifactName: omp-gui-${version}-${arch}.${ext}
   icon: resources/icons
   category: Development
+  maintainer: nornzach
+  syncDesktopName: true
   target:
     - target: AppImage
       arch: [x64]
     - target: deb
+      arch: [x64]
+    - target: rpm
       arch: [x64]
   desktop:
     entry:

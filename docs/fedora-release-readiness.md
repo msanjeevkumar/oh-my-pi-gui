@@ -23,11 +23,8 @@ Observed on 2026-09-12 using GUI commit `67c3f3a`:
 
 ## Fedora release blockers
 
-1. `package:linux` cannot resolve Electron from the range `^35.0.0`; electron-builder requires a fixed version or explicit `electronVersion`.
-2. electron-builder derives an invalid Linux executable name from package name `@oh-my-pi/omp-gui`; Linux configuration must set a safe executable name.
-3. `.deb` creation requires package `author.email` or a Linux maintainer value.
-4. GitHub releases do not include `latest-linux.yml`, so the installed GUI updater receives a 404.
-5. The current Linux launcher requires `--no-sandbox` on this Fedora environment. Determine whether a correctly configured Chromium sandbox can remove that flag before shipping.
+1. GitHub releases do not include `latest-linux.yml`, so the installed GUI updater receives a 404.
+2. The installed RPM still needs a clean Fedora smoke test without a manually supplied `--no-sandbox` flag.
 
 ## Scope
 
@@ -54,8 +51,7 @@ Observed on 2026-09-12 using GUI commit `67c3f3a`:
 
 - [x] Fork and clone paired repositories in the required nested layout.
 - [x] Characterize Fedora x86_64 build, packaging, and launch behavior.
-- [ ] Make AppImage packaging reproducible without command-line configuration overrides.
-- [ ] Decide and implement `.deb` support, including maintainer metadata, or remove `.deb` from the release contract.
+- [x] Build AppImage, `.deb`, and `.rpm` packages without command-line configuration overrides.
 - [ ] Provide Linux release metadata and validate updater behavior.
 - [ ] Run clean Fedora installation smoke test from the released artifact.
 - [ ] Publish a Fedora release after explicit approval.
@@ -68,6 +64,7 @@ Observed on 2026-09-12 using GUI commit `67c3f3a`:
 - Fedora 44 x86_64: AppImage was produced after overriding electron-builder's Electron version and executable name.
 - Fedora 44 x86_64: full `.deb` target failed because maintainer email is absent.
 - Fedora 44 x86_64: unpacked application launched and opened a native window; bundled sidecar and stats server started.
+- Fedora 44 x86_64: AppImage, `.deb`, and `.rpm` packages built with the bundled sidecar; the AppImage launched without a manual sandbox flag.
 
 ## Rollback and recovery
 
@@ -77,11 +74,12 @@ No release has been published. Local development changes should remain in the GU
 
 - 2026-09-12: Maintain both paired forks under `msanjeevkumar`; the GUI needs the OMP fork to build its bundled sidecar.
 - 2026-09-12: Treat a self-contained AppImage as the first Fedora artifact; `.deb` is not yet a working release target.
+- 2026-09-12: Keep AppImage and `.deb` targets, and add an x86_64 `.rpm` target for native Fedora installation.
 
 ## Blocker
 
-No current blocker. The next work is a source-level packaging configuration change after inspecting Linux release conventions and deciding the intended artifact set.
+No current blocker. The RPM still needs an installed-package smoke test before release.
 
 ## Exact next action
 
-Inspect `package.json` and `electron-builder.yml` against the current Electron Builder Linux requirements, then make the smallest source change that lets `bun run package:linux` finish its AppImage target without overrides.
+Install the RPM on Fedora, verify desktop launch and bundled RPC, then remove it cleanly.

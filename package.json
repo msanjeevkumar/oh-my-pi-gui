@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Desktop GUI for the omp coding agent",
+  "desktopName": "omp-gui",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -74,7 +75,7 @@
     "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "electron": "^35.0.0",
+    "electron": "35.7.5",
     "electron-builder": "^26.0.0",
     "electron-vite": "^3.0.0",
     "micromark-extension-math": "3.1.0",
