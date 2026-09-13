@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Fedora packaging**: Linux releases can include x86_64 RPM packages alongside AppImage and DEB artifacts ([#7](https://github.com/nornzach/oh-my-pi-gui/pull/7) by [@msanjeevkumar](https://github.com/msanjeevkumar)).
+- **Fedora packaging**: Linux releases can include x86_64 RPM packages alongside AppImage and DEB artifacts.
 
 ### Fixed
 
