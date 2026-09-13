@@ -71,6 +71,8 @@ let prompt: Mock;
 let setThinkingLevel: Mock;
 let setSetting: Mock;
 let setPlanMode: Mock;
+let showOpenDialog: Mock;
+let readImage: Mock;
 
 async function flush(): Promise<void> {
 	await act(async () => {
@@ -148,8 +150,11 @@ async function mount(withRuntime = false): Promise<void> {
 	setThinkingLevel = vi.fn(async (level: string) => ok({ thinkingLevel: level, thinkingConfigured: level }));
 	setSetting = vi.fn(async (_path: string, value: unknown) => ok({ value, provenance: { layers: ["global"] } }));
 	setPlanMode = vi.fn(async (enabled: boolean) => ok({ enabled }));
+	showOpenDialog = vi.fn(async () => null);
+	readImage = vi.fn(async () => ({ ok: false, dataUrl: null, mime: null, size: 0 }));
 	(window as unknown as Record<string, unknown>).omp = {
-		fs: { list: vi.fn(async () => ({ entries: [] })) },
+		fs: { list: vi.fn(async () => ({ entries: [] })), readImage },
+		system: { showOpenDialog },
 		events: { onCommandsUpdate: vi.fn(() => () => {}) },
 		prefs: { set: vi.fn(async () => ({})), get: vi.fn(async () => []) },
 		rpc: {
@@ -246,6 +251,33 @@ afterEach(async () => {
 });
 
 describe("InputArea queue shorthand submit", () => {
+	it("opens the native image picker and adds the selected image", async () => {
+		await mount();
+		showOpenDialog.mockResolvedValueOnce(["/tmp/pixel.png"]);
+		readImage.mockResolvedValueOnce({
+			ok: true,
+			dataUrl: "data:image/png;base64,cGl4ZWw=",
+			mime: "image/png",
+			size: 5,
+		});
+		const attach = document.querySelector('[title="Attach image"]') as unknown as TestElement | null;
+		if (!attach) throw new Error("attachment button not found");
+
+		await click(attach);
+		await flush();
+
+		expect(showOpenDialog).toHaveBeenCalledWith([
+			{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"] },
+		]);
+		expect(readImage).toHaveBeenCalledWith("/tmp/pixel.png", "t0");
+		expect(useComposerStore.getState().images).toEqual([
+			{
+				content: { type: "image", data: "cGl4ZWw=", mimeType: "image/png" },
+				preview: "data:image/png;base64,cGl4ZWw=",
+			},
+		]);
+	});
+
 	it("restores an unacknowledged send after process recovery and blocks duplicate submission", async () => {
 		await mount(true);
 		const pending = Promise.withResolvers<RpcResponse>();

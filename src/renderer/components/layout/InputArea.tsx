@@ -27,7 +27,7 @@ import {
 	recordAndTranscribe,
 	stopVoiceRecording,
 } from "../../lib/voice";
-import { useComposerStore } from "../../stores/composer";
+import { type ComposerImage, useComposerStore } from "../../stores/composer";
 import { useInputHistoryStore } from "../../stores/input-history";
 import { useModelStore } from "../../stores/model";
 import { type SessionStore, useSessionStore } from "../../stores/session";
@@ -168,7 +168,6 @@ export function InputArea() {
 	}, [runSettingsOpen]);
 
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-	const fileInputRef = useRef<HTMLInputElement>(null);
 	const mountedRef = useRef(true);
 
 	// An in-flight dictation is cancelled (never transcribed) if the composer unmounts.
@@ -658,6 +657,30 @@ export function InputArea() {
 		insertPasteBlob(content);
 	};
 
+	const handleAttach = async () => {
+		try {
+			const paths = await window.omp.system.showOpenDialog([
+				{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"] },
+			]);
+			if (!paths?.length) return;
+			const results = await Promise.all(paths.map(path => window.omp.fs.readImage(path, runtimeTabId ?? undefined)));
+			const attached: ComposerImage[] = results.map(result => {
+				if (!result.ok || !result.dataUrl || !result.mime) throw new Error(result.error ?? "Could not read image");
+				return {
+					content: {
+						type: "image",
+						data: result.dataUrl.slice(result.dataUrl.indexOf(",") + 1),
+						mimeType: result.mime,
+					},
+					preview: result.dataUrl,
+				};
+			});
+			setImages(previous => [...previous, ...attached]);
+		} catch (cause) {
+			toast({ variant: "error", title: t("input.attach"), message: String(cause) });
+		}
+	};
+
 	const modeLabel = isStreaming
 		? mode === "followUp"
 			? t("input.followUp")
@@ -900,28 +923,12 @@ export function InputArea() {
 							<button
 								type="button"
 								disabled={collabReadOnly}
-								onClick={() => fileInputRef.current?.click()}
+								onClick={handleAttach}
 								title={t("input.attach")}
 								className="omp-pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
 							>
 								<Paperclip size={16} />
 							</button>
-							<input
-								ref={fileInputRef}
-								type="file"
-								accept="image/*"
-								multiple
-								className="hidden"
-								onChange={event => {
-									const files = Array.from(event.target.files ?? []);
-									if (files.length > 0) {
-										void Promise.all(files.map(fileToImage)).then(pasted =>
-											setImages(previous => [...previous, ...pasted]),
-										);
-									}
-									event.target.value = "";
-								}}
-							/>
 
 							{sttEnabled && (
 								<button
