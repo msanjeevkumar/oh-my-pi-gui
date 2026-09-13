@@ -37,7 +37,6 @@ Run parallel agent sessions · inspect every tool call · manage models and usag
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Release process (maintainers)](#release-process-maintainers)
-- [Fedora release initiative](docs/fedora-release-readiness.md)
 
 ### Why a GUI?
 

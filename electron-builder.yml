@@ -62,7 +62,7 @@ linux:
   artifactName: omp-gui-${version}-${arch}.${ext}
   icon: resources/icons
   category: Development
-  maintainer: nornzach
+  maintainer: Sanjeev Kumar <sanjeev.4444456@gmail.com>
   syncDesktopName: true
   target:
     - target: AppImage

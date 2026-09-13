@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Desktop GUI for the omp coding agent",
   "desktopName": "omp-gui",
+  "homepage": "https://github.com/nornzach/oh-my-pi-gui",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
