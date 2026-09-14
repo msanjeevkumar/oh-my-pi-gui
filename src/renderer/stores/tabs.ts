@@ -31,7 +31,7 @@ import { basename } from "../lib/format";
 import { translate } from "../lib/i18n";
 import { sessionDisplayTitle } from "../lib/session-title";
 import { beginTabRoute, reconcileTabRoute, resetTabRoute, settleTabRoute } from "../lib/tab-routing";
-import { type ComposerImage, type ComposerStore, useComposerStore } from "./composer";
+import { type ComposerAnnotation, type ComposerImage, type ComposerStore, useComposerStore } from "./composer";
 import type { ExtensionUiStore } from "./extension-ui";
 import { useForkHandoffStore } from "./fork-handoff";
 import {
@@ -690,6 +690,7 @@ export function restoreTabComposer(
 	sessionId: string,
 	draft: string,
 	images: ComposerImage[],
+	annotations: ComposerAnnotation[],
 	originComposer?: StoreApi<ComposerStore>,
 ): void {
 	if (!tabId) return;
@@ -701,6 +702,7 @@ export function restoreTabComposer(
 		useComposerStore.setState(current => ({
 			draft: prependDraft(current.draft),
 			images: [...images, ...current.images],
+			annotations: [...annotations, ...current.annotations],
 		}));
 		return;
 	}
@@ -708,6 +710,7 @@ export function restoreTabComposer(
 	composer.setState(current => ({
 		draft: prependDraft(current.draft),
 		images: [...images, ...current.images],
+		annotations: [...annotations, ...current.annotations],
 	}));
 }
 

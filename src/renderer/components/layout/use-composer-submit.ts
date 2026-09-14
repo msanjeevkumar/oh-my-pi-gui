@@ -12,10 +12,15 @@ import { expandEmoticons } from "../../lib/emoji";
 import { useT } from "../../lib/i18n";
 import { parseComposerMode } from "../../lib/input-modes";
 import { clearSessionContext } from "../../lib/messages";
-import { dropReferencedPastes, expandPasteMarkers } from "../../lib/paste-blobs";
+import { dropReferencedPastes, expandPasteMarkers, wrapPasteInAttachmentBlock } from "../../lib/paste-blobs";
 import { parseQueueShorthand, splitQueuedMessages } from "../../lib/queue-input";
 import { useTabRpc } from "../../lib/tab-rpc";
-import { type ComposerImage, type ComposerStore, useComposerStore } from "../../stores/composer";
+import {
+	type ComposerAnnotation,
+	type ComposerImage,
+	type ComposerStore,
+	useComposerStore,
+} from "../../stores/composer";
 import { useInputHistoryStore } from "../../stores/input-history";
 import { type MessagesStore, useMessagesStore } from "../../stores/messages";
 import { type SessionStore, useSessionStore } from "../../stores/session";
@@ -28,6 +33,7 @@ type SendMode = "prompt" | "steer" | "followUp";
 export function useComposerSubmit({
 	text,
 	images,
+	annotations,
 	sending,
 	status,
 	isStreaming,
@@ -38,11 +44,13 @@ export function useComposerSubmit({
 	routeReady,
 	setText,
 	setImages,
+	setAnnotations,
 	setMenu,
 	setSending,
 }: {
 	text: string;
 	images: ComposerImage[];
+	annotations: ComposerAnnotation[];
 	sending: boolean;
 	status: string;
 	isStreaming: boolean;
@@ -53,6 +61,7 @@ export function useComposerSubmit({
 	routeReady: boolean;
 	setText: (next: string | ((current: string) => string)) => void;
 	setImages: (next: ComposerImage[] | ((current: ComposerImage[]) => ComposerImage[])) => void;
+	setAnnotations: ComposerStore["setAnnotations"];
 	setMenu: (menu: null) => void;
 	setSending: (value: boolean) => void;
 }) {
@@ -67,7 +76,7 @@ export function useComposerSubmit({
 		// `forceMode` overrides the steer/followUp toggle for one send (⌃Enter).
 		(overrideText?: string, forceMode?: SendMode) => {
 			const message = (overrideText ?? text).trim();
-			if ((!message && images.length === 0) || sending) return;
+			if ((!message && images.length === 0 && annotations.length === 0) || sending) return;
 			if (!routeReady || !runtimeTabId) return;
 			if (status !== "ready") {
 				toast({ variant: "warning", message: t("input.agentConnecting") });
@@ -89,14 +98,29 @@ export function useComposerSubmit({
 					? sessionRuntimeStore<ComposerStore>(originTabId, "composer") === originComposer
 					: useTabsStore.getState().activeTabId === originTabId &&
 						useSessionStore.getState().sessionId === originSessionId;
-			const restoreDraft = (draft: string, attachments: ComposerImage[]) =>
+			const restoreDraft = (
+				draft: string,
+				attachments: ComposerImage[],
+				responseAnnotations: ComposerAnnotation[] = [],
+			) =>
 				restoreTabComposer(
 					originTabId,
 					originSessionId,
 					draft,
 					attachments,
+					responseAnnotations,
 					originSession ? originComposer : undefined,
 				);
+			const addAnnotations = (body: string): string =>
+				[
+					...annotations.map(
+						annotation =>
+							`${wrapPasteInAttachmentBlock(annotation.text)}${annotation.comment ? `\n\n${annotation.comment}` : ""}`,
+					),
+					body,
+				]
+					.filter(Boolean)
+					.join("\n\n");
 
 			let uncertain = false;
 			const showSendError = (title: string, message: string) =>
@@ -232,6 +256,7 @@ export function useComposerSubmit({
 				}
 				useInputHistoryStore.getState().record(message);
 				const previousImages = images;
+				const previousAnnotations = annotations;
 				setText("");
 				setImages([]);
 				setMenu(null);
@@ -242,6 +267,10 @@ export function useComposerSubmit({
 					toast({ variant: "warning", message: t("input.queue.guiCommand") });
 					return;
 				}
+				const consumesAnnotations = annotations.length > 0 && !dispatchItems[0]?.startsWith("/");
+				const wireItems = consumesAnnotations
+					? dispatchItems.map((item, index) => (index === 0 ? addAnnotations(item) : item))
+					: dispatchItems;
 				const startImmediately = !isStreaming && queuedMessageCount === 0;
 				// session.followUp throws on extension-command text (agent-session.ts:5508-5510),
 				// so those items go through prompt, whose slash chain executes them.
@@ -249,13 +278,14 @@ export function useComposerSubmit({
 					commands.filter(command => command.source === "extension").map(command => command.name),
 				);
 				setSending(true);
+				if (consumesAnnotations) setAnnotations([]);
 				void (async () => {
 					let sent = 0;
 					let deliveryPending = false;
 					try {
-						for (let index = 0; index < dispatchItems.length; index++) {
+						for (let index = 0; index < wireItems.length; index++) {
 							if (!originStillActive()) throw new Error("Tab changed during queue dispatch");
-							const item = dispatchItems[index] ?? "";
+							const item = wireItems[index] ?? "";
 							const itemImages = index === 0 ? payload : undefined;
 							const isExtensionCommand =
 								item.startsWith("/") && extensionCommandNames.has(/^\/([a-z0-9-]+)/i.exec(item)?.[1] ?? "");
@@ -278,7 +308,7 @@ export function useComposerSubmit({
 						if (deliveryPending) markUncertain();
 						if (sent === 0) {
 							// Zero items sent: restore the original draft (markers) and images.
-							restoreDraft(message, previousImages);
+							restoreDraft(message, previousImages, consumesAnnotations ? previousAnnotations : []);
 						} else {
 							// Partial failure: restore the remainder in the exact shorthand
 							// shape the parser can consume again. Continuation indentation
@@ -313,8 +343,10 @@ export function useComposerSubmit({
 			// while streaming), session-replacing commands are blocked while
 			// busy, and local-only resolutions rehydrate the transcript.
 			const payload = images.map(image => image.content);
+			const consumesAnnotations = annotations.length > 0 && !expandedMessage.startsWith("/");
+			const submittedMessage = consumesAnnotations ? addAnnotations(expandedMessage) : expandedMessage;
 			const submit = planComposerSubmit({
-				message: expandedMessage,
+				message: submittedMessage,
 				images: payload,
 				isStreaming,
 				mode: forceMode ?? mode,
@@ -347,10 +379,10 @@ export function useComposerSubmit({
 			}
 			const previousImages = images;
 			const optimisticMessage: AgentMessage | undefined =
-				!isStreaming && !expandedMessage.startsWith("/")
+				!isStreaming && !submittedMessage.startsWith("/")
 					? {
 							role: "user",
-							content: [{ type: "text", text: expandedMessage }, ...payload],
+							content: [{ type: "text", text: submittedMessage }, ...payload],
 							timestamp: Date.now(),
 							optimistic: true,
 							optimisticAfterEntryId:
@@ -360,6 +392,7 @@ export function useComposerSubmit({
 			if (optimisticMessage) originMessages.getState().appendLiveMessage(optimisticMessage);
 			setText("");
 			setImages([]);
+			if (consumesAnnotations) setAnnotations([]);
 			setMenu(null);
 			setSending(true);
 			let accepted = false;
@@ -369,7 +402,7 @@ export function useComposerSubmit({
 			setTimeout(() => {
 				if (!originStillActive()) {
 					if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-					restoreDraft(message, previousImages);
+					restoreDraft(message, previousImages, consumesAnnotations ? annotations : []);
 					return;
 				}
 				void submit
@@ -378,7 +411,7 @@ export function useComposerSubmit({
 						if (!response.success) {
 							if (response.code === "rpc_delivery_unknown") markUncertain();
 							if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-							restoreDraft(message, previousImages);
+							restoreDraft(message, previousImages, consumesAnnotations ? annotations : []);
 							showSendError(t("input.sendFailed"), response.error);
 							return;
 						}
@@ -394,7 +427,7 @@ export function useComposerSubmit({
 						}
 						markUncertain();
 						if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-						restoreDraft(message, previousImages);
+						restoreDraft(message, previousImages, consumesAnnotations ? annotations : []);
 						showSendError(t("input.sendFailed"), String(error));
 					})
 					.finally(() => {
@@ -405,6 +438,7 @@ export function useComposerSubmit({
 		[
 			text,
 			images,
+			annotations,
 			sending,
 			status,
 			isStreaming,
@@ -418,6 +452,7 @@ export function useComposerSubmit({
 			t,
 			setText,
 			setImages,
+			setAnnotations,
 			setSending,
 			setMenu,
 		],

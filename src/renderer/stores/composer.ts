@@ -16,8 +16,17 @@ export interface ComposerImage {
 	preview: string;
 }
 
+export interface ComposerAnnotation {
+	id: string;
+	text: string;
+	comment: string;
+	/** Rendered text offsets restore highlights after a transcript remount. */
+	source?: { message: string; block: number; start: number; end: number };
+}
+
 export interface ComposerStore {
 	draft: string;
+	annotations: ComposerAnnotation[];
 	sending: boolean;
 	submissionUncertain: boolean;
 	setSending: (value: boolean) => void;
@@ -26,6 +35,7 @@ export interface ComposerStore {
 	/** Replace the draft, or compute the next value from the current one
 	 * (React setState parity — InputArea's updater-form call sites unchanged). */
 	setDraft: (next: string | ((current: string) => string)) => void;
+	setAnnotations: (next: ComposerAnnotation[] | ((current: ComposerAnnotation[]) => ComposerAnnotation[])) => void;
 	setImages: (next: ComposerImage[] | ((current: ComposerImage[]) => ComposerImage[])) => void;
 	reset: () => void;
 }
@@ -33,14 +43,17 @@ export interface ComposerStore {
 export const createComposerStore = () =>
 	createStore<ComposerStore>()(set => ({
 		draft: "",
+		annotations: [],
 		sending: false,
 		submissionUncertain: false,
 		setSending: sending => set({ sending }),
 		setSubmissionUncertain: submissionUncertain => set({ submissionUncertain }),
 		images: [],
 		setDraft: next => set(state => ({ draft: typeof next === "function" ? next(state.draft) : next })),
+		setAnnotations: next =>
+			set(state => ({ annotations: typeof next === "function" ? next(state.annotations) : next })),
 		setImages: next => set(state => ({ images: typeof next === "function" ? next(state.images) : next })),
-		reset: () => set({ draft: "", images: [], sending: false, submissionUncertain: false }),
+		reset: () => set({ draft: "", annotations: [], images: [], sending: false, submissionUncertain: false }),
 	}));
 
 const defaultComposerStore = createComposerStore();

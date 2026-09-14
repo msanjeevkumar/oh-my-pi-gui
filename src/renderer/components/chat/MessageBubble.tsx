@@ -1,11 +1,12 @@
 import { Archive, Check, Copy, FileText, GitBranch, Terminal } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useState } from "react";
+import { memo, useId, useState } from "react";
 import type { AgentMessage, ImageContent, MessageContent, ToolCallContent } from "../../../shared/rpc-types";
 import { AnsiText, hasAnsi } from "../../lib/ansi";
 import { copyText, cx, formatClock, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
+import { messageIdentity } from "../../lib/message-identity";
 import { forkSessionFromMessageInNewTab, isRenderableMessageText } from "../../lib/messages";
 import { PREVIEW_SCROLL_LG } from "../../lib/preview";
 import { useTabRpc } from "../../lib/tab-rpc";
@@ -16,6 +17,7 @@ import { toolEntryKey } from "../../stores/tools";
 import { editArgumentSummary } from "../tools/edit-args";
 import { type RunningIndicator, ToolCard } from "../tools/ToolCard";
 import { CustomMessageCard, isCustomMessageCardType } from "./CustomMessageCard";
+import { ResponseAnnotations } from "./ResponseAnnotations";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { UsageRow } from "./UsageRow";
 
@@ -279,6 +281,7 @@ export const MessageBubble = memo(function MessageBubble({
 	const tabId = useRuntimeTabId();
 	const [copied, setCopied] = useState(false);
 	const [branching, setBranching] = useState(false);
+	const sourceId = useId();
 	const switchPending = useSessionStore(state => state.switchPending !== null);
 	if (message.role === "bashExecution" || message.role === "pythonExecution") {
 		return <ExecutionBubble message={message} />;
@@ -309,7 +312,6 @@ export const MessageBubble = memo(function MessageBubble({
 		message.role === "custom" || message.role === "hookMessage"
 			? (message.customType ?? t("chat.extensionMessage"))
 			: null;
-
 	const handleCopy = () => {
 		const text = content
 			.filter((block): block is Extract<MessageContent, { type: "text" }> => block.type === "text")
@@ -404,11 +406,23 @@ export const MessageBubble = memo(function MessageBubble({
 	// Assistant / system: render block by block.
 	const blocks: ReactNode[] = [];
 	let sawNonToolBlock = false;
-	for (const block of content) {
+	for (const [blockIndex, block] of content.entries()) {
 		switch (block.type) {
 			case "text": {
 				if (isRenderableMessageText(block.text)) {
-					blocks.push(<MarkdownRenderer key={blocks.length} content={block.text} />);
+					blocks.push(
+						isAssistant ? (
+							<ResponseAnnotations
+								key={blocks.length}
+								message={messageIdentity(message) ?? sourceId}
+								block={blockIndex}
+							>
+								<MarkdownRenderer content={block.text} />
+							</ResponseAnnotations>
+						) : (
+							<MarkdownRenderer key={blocks.length} content={block.text} />
+						),
+					);
 					sawNonToolBlock = true;
 				}
 				break;

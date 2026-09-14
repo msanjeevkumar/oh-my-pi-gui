@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Response annotations**: select reply text or code, attach teardrop-numbered highlights at selection endpoints with optional comments, and preview or individually remove them from a compact composer chip before sending.
 - **Fedora packaging**: Linux releases can include x86_64 RPM packages alongside AppImage and DEB artifacts.
 
 ### Fixed

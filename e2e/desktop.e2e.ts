@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
-import { type ElectronApplication, _electron as electron, type Page } from "playwright";
+import { type ElectronApplication, _electron as electron, type Locator, type Page } from "playwright";
 
 let app: ElectronApplication;
 let page: Page;
@@ -61,6 +61,191 @@ test.afterAll(async () => {
 	if (app) await app.close();
 	if (record) await fs.copyFile(record, "test-results/desktop-rpc.jsonl").catch(() => {});
 	if (profile) await fs.rm(profile, { recursive: true, force: true });
+});
+
+async function selectResponse(source: Locator, selector: string, start?: number, end?: number) {
+	const target = source.locator(selector);
+	await target.scrollIntoViewIfNeeded();
+	const selected = await target.evaluate(
+		(node, offsets) => {
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			if (offsets.start !== undefined && offsets.end !== undefined && node.firstChild) {
+				range.setStart(node.firstChild, offsets.start);
+				range.setEnd(node.firstChild, offsets.end);
+			}
+			const selection = window.getSelection()!;
+			selection.removeAllRanges();
+			selection.addRange(range);
+			node.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 1, clientY: 1 }));
+			return selection.toString();
+		},
+		{ start, end },
+	);
+	const toolbar = page.getByRole("toolbar", { name: "Add to chat" });
+	await expect(toolbar).toBeVisible();
+	await expect
+		.poll(() =>
+			toolbar.evaluate(node => {
+				const box = node.getBoundingClientRect();
+				const range = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
+				return Math.min(Math.abs(box.bottom - range.top), Math.abs(box.top - range.bottom));
+			}),
+		)
+		.toBeLessThan(12);
+	await toolbar.hover();
+	await expect(toolbar).toHaveCSS("opacity", "1");
+	await expect(toolbar).toHaveCSS("pointer-events", "auto");
+	expect(await toolbar.evaluate(node => getComputedStyle(node).backgroundColor)).toMatch(/^rgb\(/);
+	await page.getByRole("button", { name: "Add to chat", exact: true }).click();
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const ranges = Array.from(CSS.highlights.get("response-annotations") ?? []);
+				const range = ranges.at(-1)!;
+				const endpoint = document.createRange();
+				endpoint.setStart(range.endContainer, range.endOffset);
+				endpoint.collapse(true);
+				const end = endpoint.getBoundingClientRect();
+				const badge = document
+					.querySelector('.omp-annotation-badge[aria-expanded="true"]')!
+					.getBoundingClientRect();
+				return Math.max(
+					Math.abs(badge.left - end.right),
+					Math.min(Math.abs(badge.bottom - end.top), Math.abs(badge.top - end.bottom)),
+				);
+			}),
+		)
+		.toBeLessThan(12);
+	return selected;
+}
+
+test("response annotations preserve source ranges, comments and exact submitted content", async () => {
+	await command("fixture annotations");
+	const source = page.locator("[data-response-annotation-text]").filter({ hasText: "Annotation example:" }).last();
+	await expect(source).toBeVisible();
+	const highlighted = () =>
+		page.evaluate(() => Array.from(CSS.highlights.get("response-annotations") ?? []).map(range => range.toString()));
+	const editor = page.getByRole("dialog", { name: /^Annotation \d+$/ });
+	const comment = editor.getByRole("textbox", { name: "Comment (optional)" });
+	const quote = await selectResponse(source, "strong");
+	await expect(comment).toBeFocused();
+	await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+	await comment.fill("  ");
+	await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+	await comment.fill("Discard this draft");
+	await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+	await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+	const badge = page.getByRole("button", { name: "Annotation 1", exact: true });
+	await expect(badge).toHaveText("1");
+	await expect(badge).toBeFocused();
+	await expect.poll(highlighted).toContain(quote);
+	await badge.press("Enter");
+	await expect(comment).toHaveValue("");
+	await comment.fill("  Explain this wording.  ");
+	await editor.getByRole("button", { name: "Save", exact: true }).click();
+	await selectResponse(source, "p:nth-of-type(2)");
+	await comment.fill("Remove this comment too.");
+	await editor.getByRole("button", { name: "Save", exact: true }).click();
+	const code = await selectResponse(source, "code");
+	expect(code).toBe("const value = 1;\n  return value;");
+	await comment.fill("Keep the code indentation.");
+	await editor.getByRole("button", { name: "Save", exact: true }).click();
+	await expect(page.getByRole("region", { name: "Annotation preview" })).toHaveCount(0);
+	await page.getByRole("button", { name: "3 annotations", exact: true }).hover();
+	const preview = page.getByRole("region", { name: "Annotation preview" });
+	await expect(preview).toBeVisible();
+	await preview.hover();
+	await expect(preview.getByRole("button", { name: /^Delete annotation/ })).toHaveCount(3);
+	await preview.getByRole("button", { name: "Delete annotation 2", exact: true }).focus();
+	await preview.getByRole("button", { name: "Delete annotation 2", exact: true }).press("Enter");
+	await expect(preview).toBeFocused();
+	await expect(preview.getByRole("button", { name: /^Delete annotation/ })).toHaveCount(2);
+	await expect(page.getByRole("button", { name: "Annotation 3", exact: true })).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Annotation 2", exact: true })).toHaveText("2");
+	await expect.poll(highlighted).toEqual([quote, code]);
+	const chip = page.getByRole("button", { name: "2 annotations", exact: true });
+	await expect(chip).toBeVisible();
+	await expect(preview.locator("pre")).toHaveText([quote, code], { useInnerText: false });
+	await expect(preview).toContainText("Annotation 1");
+	await expect(preview).toContainText("Annotation 2");
+	await expect(preview).toContainText("Explain this wording.");
+	await expect(preview).toContainText("Keep the code indentation.");
+	await page.screenshot({ path: "test-results/annotations-preview.png", scale: "css", animations: "disabled" });
+	await chip.focus();
+	await chip.press("Escape");
+	await expect(preview).toHaveCount(0);
+	await command("Apply these comments.");
+	const sent = (await recorded("prompt")).at(-1).message;
+	expect(sent).toContain(quote);
+	expect(sent).toContain(code);
+	expect(sent).toContain("Explain this wording.");
+	expect(sent).toContain("Keep the code indentation.");
+	expect(sent).not.toContain("Remove this passage.");
+	expect(sent).not.toContain("Remove this comment too.");
+	expect(sent).not.toContain("Discard this draft");
+	await expect(chip).toHaveCount(0);
+	await expect.poll(highlighted).toEqual([]);
+	await expect(page.locator(".omp-annotation-badge")).toHaveCount(0);
+	expect(errors).toEqual([]);
+});
+
+test("response annotations restore the exact occurrence across tabs and renumber after removal", async () => {
+	await command("fixture annotations");
+	const source = page.locator("[data-response-annotation-text]").filter({ hasText: "Annotation example:" }).last();
+	await selectResponse(source, "strong");
+	await page.getByRole("button", { name: "Cancel", exact: true }).click();
+	await selectResponse(source, "p:nth-of-type(3)", 18, 35);
+	const editor = page.getByRole("dialog", { name: "Annotation 2", exact: true });
+	await editor.getByRole("textbox").fill("Explain the second occurrence.");
+	await editor.getByRole("button", { name: "Save", exact: true }).click();
+	await page.getByRole("button", { name: "Annotation 1", exact: true }).click();
+	await page.getByRole("button", { name: "Delete annotation 1", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Annotation 2", exact: true })).toHaveCount(0);
+	const badge = page.getByRole("button", { name: "Annotation 1", exact: true });
+	await expect(badge).toHaveText("1");
+	const exactOccurrence = () =>
+		page.evaluate(() =>
+			Array.from(CSS.highlights.get("response-annotations") ?? []).map(range => ({
+				text: range.toString(),
+				start: range.startOffset,
+				end: range.endOffset,
+			})),
+		);
+	await expect.poll(exactOccurrence).toEqual([{ text: "Duplicate phrase.", start: 18, end: 35 }]);
+	await page.keyboard.press("Meta+t");
+	const tabs = page.locator('[role="tablist"] [role="tab"]');
+	await expect(tabs).toHaveCount(2);
+	await expect(page.locator(".omp-annotation-badge")).toHaveCount(0);
+	await expect.poll(exactOccurrence).toEqual([]);
+	await tabs.first().click();
+	await expect(badge).toHaveText("1");
+	await expect.poll(exactOccurrence).toEqual([{ text: "Duplicate phrase.", start: 18, end: 35 }]);
+	await badge.click();
+	const restoredEditor = page.getByRole("dialog", { name: "Annotation 1", exact: true });
+	await expect(restoredEditor.getByRole("textbox")).toHaveValue("Explain the second occurrence.");
+	await restoredEditor.getByRole("textbox").fill("Abandoned edit");
+	await restoredEditor.getByRole("button", { name: "Cancel", exact: true }).click();
+	await badge.click();
+	await expect(restoredEditor.getByRole("textbox")).toHaveValue("Explain the second occurrence.");
+	await page.keyboard.press("Escape");
+	await expect(badge).toBeFocused();
+	await selectResponse(source, "strong");
+	await page.getByRole("button", { name: "Cancel", exact: true }).click();
+	const earlierBadge = page.getByRole("button", { name: "Annotation 2", exact: true });
+	const earlierBox = await earlierBadge.boundingBox();
+	const laterBox = await badge.boundingBox();
+	if (!earlierBox || !laterBox) throw new Error("Missing numbered source badge");
+	expect(earlierBox.y).toBeLessThan(laterBox.y);
+	await page.getByRole("button", { name: "Clear annotations", exact: true }).click();
+	await expect(badge).toHaveCount(0);
+	await expect.poll(exactOccurrence).toEqual([]);
+	await command("After clearing annotations.");
+	expect((await recorded("prompt")).at(-1).message).toBe("After clearing annotations.");
+	await tabs.nth(1).click();
+	await tabs.nth(1).getByRole("button", { name: "Close tab", exact: true }).click();
+	await expect(tabs).toHaveCount(1);
+	expect(errors).toEqual([]);
 });
 
 test("initially closed modal receives focus and Escape closes it", async () => {
