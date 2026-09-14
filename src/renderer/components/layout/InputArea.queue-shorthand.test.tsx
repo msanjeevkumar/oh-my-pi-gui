@@ -278,8 +278,65 @@ describe("InputArea queue shorthand submit", () => {
 		]);
 	});
 
+	it("shows one annotation-count chip and clears every annotation", async () => {
+		await mount();
+		await act(async () =>
+			useComposerStore.getState().setAnnotations([
+				{ id: "one", text: "quoted response text", comment: "saved comment" },
+				{ id: "two", text: "second quote", comment: "" },
+			]),
+		);
+
+		expect(container.textContent).toContain("2 annotations");
+		expect(container.textContent).not.toContain("quoted response text");
+		const chip = Array.from(document.querySelectorAll("button[aria-controls]")).find(
+			button => button.textContent === "2 annotations",
+		) as unknown as TestElement | undefined;
+		if (!chip) throw new Error("annotation count chip not found");
+		await act(async () => chip.dispatchEvent(new Event("focusin", { bubbles: true })));
+		expect(container.textContent).toContain("quoted response text");
+		expect(container.textContent).toContain("saved comment");
+		expect(container.textContent).toContain("second quote");
+		const clear = document.querySelector('button[aria-label="Clear annotations"]') as unknown as TestElement | null;
+		if (!clear) throw new Error("annotation clear button not found");
+		await click(clear);
+
+		expect(useComposerStore.getState().annotations).toEqual([]);
+		await act(async () => useSessionStore.setState({ isStreaming: false }));
+		await typeInto(findTextarea(), "no annotations remain");
+		await pressEnter(findTextarea());
+		await flush();
+		expect(prompt).toHaveBeenCalledWith("no annotations remain", []);
+		expect(prompt).not.toHaveBeenCalledWith(expect.stringContaining("quoted response text"), expect.anything());
+		expect(prompt).not.toHaveBeenCalledWith(expect.stringContaining("saved comment"), expect.anything());
+	});
+
+	it("submits annotations as exact attachment blocks before the typed instruction", async () => {
+		await mount();
+		await act(async () => {
+			useSessionStore.setState({ isStreaming: false });
+			useComposerStore
+				.getState()
+				.setAnnotations([{ id: "one", text: "const value = 1;\nreturn value;", comment: "Make it a string." }]);
+		});
+		await typeInto(findTextarea(), "Change this to a string.");
+		await pressEnter(findTextarea());
+		await flush();
+
+		expect(prompt).toHaveBeenCalledWith(
+			"<attachment>\nconst value = 1;\nreturn value;\n</attachment>\n\nMake it a string.\n\nChange this to a string.",
+			[],
+		);
+		expect(useComposerStore.getState().annotations).toEqual([]);
+	});
+
 	it("restores an unacknowledged send after process recovery and blocks duplicate submission", async () => {
 		await mount(true);
+		await act(async () =>
+			useComposerStore
+				.getState()
+				.setAnnotations([{ id: "failed", text: "failed response quote", comment: "retry comment" }]),
+		);
 		const pending = Promise.withResolvers<RpcResponse>();
 		prompt.mockReturnValueOnce(pending.promise);
 		await typeInto(findTextarea(), "preserve in-flight input");
@@ -314,6 +371,9 @@ describe("InputArea queue shorthand submit", () => {
 		});
 		await flush();
 		expect(useComposerStore.getState().draft).toBe("preserve in-flight input\nnext draft");
+		expect(useComposerStore.getState().annotations).toEqual([
+			{ id: "failed", text: "failed response quote", comment: "retry comment" },
+		]);
 		expect(useComposerStore.getState().submissionUncertain).toBe(true);
 		expect(useComposerStore.getState().sending).toBe(false);
 		await pressEnter(findTextarea());

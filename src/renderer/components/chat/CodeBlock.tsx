@@ -141,7 +141,7 @@ export function CodeBlock({
 			)}
 		>
 			{(showLanguage || showCopy) && (
-				<div className="flex h-7 items-center justify-end gap-2 border-b border-[var(--omp-border-muted)]/60 px-2.5">
+				<div className="flex h-7 select-none items-center justify-end gap-2 border-b border-[var(--omp-border-muted)]/60 px-2.5">
 					{showLanguage && (
 						<span className="font-mono text-omp-xs font-medium uppercase tracking-[0.08em] text-[var(--omp-dim)]">
 							{lang}

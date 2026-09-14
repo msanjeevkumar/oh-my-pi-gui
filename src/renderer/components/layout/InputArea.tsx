@@ -1,6 +1,6 @@
 import { ArrowUp, ChevronDown, Mic, MoreHorizontal, Paperclip, Square, X, Zap } from "lucide-react";
 import type { ClipboardEvent, KeyboardEvent } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AvailableCommand, ImageContent } from "../../../shared/rpc-types";
 import { useDisplayPreference } from "../../lib/display-preferences";
@@ -87,6 +87,10 @@ export function InputArea() {
 	const setText = useComposerStore(s => s.setDraft);
 	const images = useComposerStore(s => s.images);
 	const setImages = useComposerStore(s => s.setImages);
+	const annotations = useComposerStore(s => s.annotations);
+	const setAnnotations = useComposerStore(s => s.setAnnotations);
+	const [annotationPreviewOpen, setAnnotationPreviewOpen] = useState(false);
+	const annotationPreviewId = useId();
 	const [mode, setMode] = useState<SendMode>("prompt");
 	const [menu, setMenu] = useState<CompletionMenu | null>(null);
 	const [commands, setCommands] = useState<AvailableCommand[]>([]);
@@ -480,6 +484,7 @@ export function InputArea() {
 	const send = useComposerSubmit({
 		text,
 		images,
+		annotations,
 		sending,
 		status,
 		isStreaming,
@@ -490,6 +495,7 @@ export function InputArea() {
 		routeReady,
 		setText,
 		setImages,
+		setAnnotations,
 		setMenu,
 		setSending,
 	});
@@ -808,7 +814,7 @@ export function InputArea() {
 						/>
 					)}
 					<div
-						className="overflow-hidden rounded-xl border border-[var(--omp-input-border)] bg-[var(--omp-input-bg)] transition-[border-color,box-shadow] duration-150 focus-within:border-[var(--omp-input-focus-border)] focus-within:shadow-[var(--omp-shadow-glow)]"
+						className="rounded-xl border border-[var(--omp-input-border)] bg-[var(--omp-input-bg)] transition-[border-color,box-shadow] duration-150 focus-within:border-[var(--omp-input-focus-border)] focus-within:shadow-[var(--omp-shadow-glow)]"
 						style={modeColor ? { borderColor: modeColor } : undefined}
 					>
 						<div className="px-3.5 pb-1.5 pt-2.5">
@@ -825,6 +831,91 @@ export function InputArea() {
 									>
 										{t("input.allowResend")}
 									</button>
+								</div>
+							)}
+							{annotations.length > 0 && (
+								<div
+									className="relative mb-3 flex w-fit items-center gap-1"
+									onMouseEnter={() => setAnnotationPreviewOpen(true)}
+									onMouseLeave={() => setAnnotationPreviewOpen(false)}
+									onBlur={event => {
+										if (!event.currentTarget.contains(event.relatedTarget)) setAnnotationPreviewOpen(false);
+									}}
+									onKeyDown={event => {
+										if (event.key === "Escape") {
+											event.preventDefault();
+											setAnnotationPreviewOpen(false);
+										}
+									}}
+								>
+									<button
+										type="button"
+										onFocus={() => setAnnotationPreviewOpen(true)}
+										aria-expanded={annotationPreviewOpen}
+										aria-controls={annotationPreviewId}
+										className="omp-pressable rounded-lg border border-[var(--omp-border-muted)] px-2 py-1 text-omp-sm text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
+									>
+										{t(annotations.length === 1 ? "input.annotationCountSingle" : "input.annotationCount", {
+											count: annotations.length,
+										})}
+									</button>
+									<button
+										type="button"
+										onClick={() => setAnnotations([])}
+										aria-label={t("input.clearAnnotations")}
+										title={t("input.clearAnnotations")}
+										className="omp-pressable flex h-7 w-7 items-center justify-center rounded-md text-[var(--omp-dim)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
+									>
+										<X size={12} />
+									</button>
+									{annotationPreviewOpen && (
+										<div className="absolute bottom-full left-0 z-10 w-[min(32rem,calc(100vw-4rem))] pb-2">
+											<div
+												id={annotationPreviewId}
+												role="region"
+												aria-label={t("input.annotationPreview")}
+												tabIndex={0}
+												className="max-h-[50vh] overflow-auto rounded-xl border border-[var(--omp-border)] bg-[var(--omp-bg-elevated)] p-3 shadow-[var(--omp-shadow-lg)]"
+											>
+												{annotations.map((annotation, index) => (
+													<div
+														key={annotation.id}
+														className="not-last:mb-3 not-last:border-b not-last:border-[var(--omp-border-muted)] not-last:pb-3"
+													>
+														<div className="mb-1 flex items-center justify-between gap-2 text-omp-xs font-semibold uppercase tracking-[0.08em] text-[var(--omp-accent)]">
+															<span>{t("chat.annotation", { index: index + 1 })}</span>
+															<button
+																type="button"
+																aria-label={t("chat.deleteAnnotation", { index: index + 1 })}
+																title={t("chat.deleteAnnotation", { index: index + 1 })}
+																className="omp-pressable flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--omp-dim)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
+																onClick={event => {
+																	if (annotations.length === 1) textareaRef.current?.focus();
+																	else
+																		event.currentTarget
+																			.closest<HTMLElement>('[role="region"]')
+																			?.focus();
+																	setAnnotations(current =>
+																		current.filter(item => item.id !== annotation.id),
+																	);
+																}}
+															>
+																<X size={12} />
+															</button>
+														</div>
+														<pre className="max-h-24 overflow-auto font-sans text-omp-sm leading-[1.5] whitespace-pre-wrap text-[var(--omp-muted)]">
+															{annotation.text}
+														</pre>
+														{annotation.comment && (
+															<p className="mt-2 whitespace-pre-wrap text-omp-sm text-[var(--omp-text)]">
+																{annotation.comment}
+															</p>
+														)}
+													</div>
+												))}
+											</div>
+										</div>
+									)}
 								</div>
 							)}
 							{images.length > 0 && (
@@ -1050,7 +1141,7 @@ export function InputArea() {
 												status !== "ready" ||
 												sending ||
 												submissionUncertain ||
-												(!text.trim() && images.length === 0)
+												(!text.trim() && images.length === 0 && annotations.length === 0)
 											}
 											aria-label={t("input.send")}
 											title={t("input.send")}
@@ -1079,7 +1170,7 @@ export function InputArea() {
 											status !== "ready" ||
 											sending ||
 											submissionUncertain ||
-											(!text.trim() && images.length === 0)
+											(!text.trim() && images.length === 0 && annotations.length === 0)
 										}
 										aria-label={t("input.send")}
 										title={t("input.send")}

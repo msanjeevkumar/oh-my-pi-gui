@@ -28,7 +28,7 @@ import type {
 	TodoPhase,
 } from "../../shared/rpc-types";
 import { acceptsActiveTabEvents } from "../lib/tab-routing";
-import { useComposerStore } from "./composer";
+import { type ComposerAnnotation, useComposerStore } from "./composer";
 import { useExtensionUiStore } from "./extension-ui";
 import { useForkHandoffStore } from "./fork-handoff";
 import { useMessagesStore } from "./messages";
@@ -165,6 +165,15 @@ function seedTabs(active: "t0" | "t1" | "t2" = "t0"): void {
 	setFocusedSessionRuntime(active);
 }
 
+function annotation(tag: string): ComposerAnnotation {
+	return {
+		id: `annotation-${tag}`,
+		text: `quote-${tag}`,
+		comment: `comment-${tag}`,
+		source: { message: `message-${tag}`, block: 1, start: 2, end: 3 },
+	};
+}
+
 /** Fill the live stores with t0's recognizable session state. */
 function fillLiveStores(tag: string): void {
 	useSessionStore.setState({
@@ -197,6 +206,7 @@ function fillLiveStores(tag: string): void {
 		.setImages([
 			{ content: { type: "image", data: `image-${tag}`, mimeType: "image/png" }, preview: `preview-${tag}` },
 		]);
+	useComposerStore.getState().setAnnotations([annotation(tag)]);
 	usePlanApprovalStore.getState().showProposal({
 		planFilePath: `/plan-${tag}.md`,
 		planContent: `plan-${tag}`,
@@ -560,11 +570,13 @@ describe("tabs store switch", () => {
 
 		// Hydrate never touches the composer draft: t0's draft survives the switch.
 		expect(useComposerStore.getState().draft).toBe("draft-t0");
+		expect(useComposerStore.getState().annotations).toEqual([annotation("t0")]);
 
 		// …and t1's bundle parked its own draft, restored on the way back.
 		await useTabsStore.getState().switchTab("t1");
 		expect(useComposerStore.getState().draft).toBe("draft-t1");
 		expect(useComposerStore.getState().images[0]?.content.data).toBe("image-t1");
+		expect(useComposerStore.getState().annotations).toEqual([annotation("t1")]);
 		expect(usePlanApprovalStore.getState().pending?.planContent).toBe("plan-t1");
 		expect(useExtensionUiStore.getState().pendingRequests.map(request => request.id)).toEqual(["ui-t1"]);
 	});
@@ -593,18 +605,25 @@ describe("tabs store switch", () => {
 		fillLiveStores("t0");
 		await useTabsStore.getState().switchTab("t1");
 		useComposerStore.getState().setDraft("visible-t1");
+		useComposerStore.getState().setAnnotations([annotation("visible")]);
 
-		restoreTabComposer("t0", "replaced-session", "stale-submit", []);
-		restoreTabComposer("t0", "s-t0", "failed-t0", [
-			{ content: { type: "image", data: "failed-image", mimeType: "image/png" }, preview: "failed-preview" },
-		]);
+		restoreTabComposer("t0", "replaced-session", "stale-submit", [], []);
+		restoreTabComposer(
+			"t0",
+			"s-t0",
+			"failed-t0",
+			[{ content: { type: "image", data: "failed-image", mimeType: "image/png" }, preview: "failed-preview" }],
+			[annotation("failed")],
+		);
 
 		expect(useComposerStore.getState().draft).toBe("visible-t1");
 		expect(useComposerStore.getState().images).toEqual([]);
+		expect(useComposerStore.getState().annotations).toEqual([annotation("visible")]);
 
 		await useTabsStore.getState().switchTab("t0");
 		expect(useComposerStore.getState().draft).toBe("failed-t0\ndraft-t0");
 		expect(useComposerStore.getState().images.map(image => image.content.data)).toEqual(["failed-image", "image-t0"]);
+		expect(useComposerStore.getState().annotations).toEqual([annotation("failed"), annotation("t0")]);
 	});
 
 	it("derives run state from the tab entry when restoring a background-running tab", async () => {

@@ -445,6 +445,7 @@ if (process.argv.includes("stats")) {
 				write({ type: "collab_state", state: state.collab });
 				break;
 			}
+
 			case "get_ssh_hosts":
 				ok({ hosts: [], warnings: [], openSshAvailable: true });
 				break;
@@ -572,7 +573,9 @@ TPS_{\\text{decode}}
 \\[
 T_{\\text{请求}} = T_{\\text{排队等待}} + T_{\\text{网络传输}} + T_{\\text{输入预处理}} + T_{\\text{输入分词}} + T_{\\text{首令牌等待}} + \\frac{N_{\\text{输出令牌总数}}-1}{TPS_{\\text{decode}}} + T_{\\text{结果后处理}}
 \\]`
-										: "Local fixture reply",
+										: command.message === "fixture annotations"
+											? "Annotation example: **exact selected text** stays readable.\n\n```ts\nconst value = 1;\n  return value;\n```\n\nRemove this passage.\n\nDuplicate phrase. Duplicate phrase."
+											: "Local fixture reply",
 							},
 						],
 						timestamp: Date.now(),
