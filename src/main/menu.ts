@@ -4,6 +4,7 @@
 import { app, Menu, type MenuItemConstructorOptions, shell } from "electron";
 import { IPC_EVENTS, type MenuAction } from "../shared/ipc-types";
 import { getMainLanguage, mainT } from "./i18n";
+import { appVersion } from "./updater";
 import type { SpawnWindow, WindowManager } from "./window";
 
 function sendMenuAction(windowManager: WindowManager, spawnWindow: SpawnWindow, action: MenuAction): void {
@@ -20,8 +21,14 @@ function sendMenuAction(windowManager: WindowManager, spawnWindow: SpawnWindow, 
 	});
 }
 
-export function createMenu(windowManager: WindowManager, spawnWindow: SpawnWindow): void {
+export function createMenu(windowManager: WindowManager, spawnWindow: SpawnWindow, bundledVersion: string | null): void {
 	const language = getMainLanguage();
+	app.setAboutPanelOptions({
+		applicationName: "omp-gui",
+		applicationVersion: mainT("about.versions", language)
+			.replace("{gui}", appVersion())
+			.replace("{omp}", bundledVersion ?? mainT("about.unavailable", language)),
+	});
 	const template: MenuItemConstructorOptions[] = [
 		...(process.platform === "darwin"
 			? [

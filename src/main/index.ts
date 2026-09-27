@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { app, BrowserWindow, globalShortcut, nativeImage, session } from "electron";
 import Store from "electron-store";
 import type { SessionKind } from "../shared/ipc-types";
+import { getBundledOmpVersion } from "./bundled-omp-version";
 import { setupDeepLinks } from "./deep-link";
 import { ensureDefaultWorkspace } from "./default-workspace";
 import { registerIpcHandlers } from "./ipc";
@@ -62,7 +63,7 @@ app.setName("omp");
  */
 function resolveBundledOmp(): string | null {
 	const override = process.env.OMP_BUNDLED_OMP;
-	if (override && existsSync(override)) return override;
+	if (override && existsSync(override)) return resolve(override);
 	if (process.resourcesPath) {
 		const packaged = join(process.resourcesPath, "omp");
 		if (existsSync(packaged)) return packaged;
@@ -284,6 +285,7 @@ app.whenReady().then(() => {
 	const initialCwd = resolveInitialCwd();
 	const explicitStartupCwd = resolveExplicitStartupCwd();
 	const bundledOmp = resolveBundledOmp();
+	let bundledVersion: string | null = null;
 	const sourceCli = resolveSourceCli();
 	sidecarPool = new SidecarPool((cwd, kind, fresh) => {
 		const sc = new SidecarManager({
@@ -340,6 +342,7 @@ app.whenReady().then(() => {
 		logWatcher,
 		windowManager,
 		benchmarkBinaryPath: bundledOmp,
+		getBundledVersion: () => bundledVersion,
 		benchmarkEnv: async () => ({ ...process.env, ...(await shellSpawnEnv()), ...(await resolveProxyEnvForSpawn()) }),
 		spawnWindow,
 	});
@@ -370,7 +373,12 @@ app.whenReady().then(() => {
 
 	// Tray, menu, deep links, updater
 	createTray(windowManager, spawnWindow);
-	createMenu(windowManager, spawnWindow);
+	createMenu(windowManager, spawnWindow, bundledVersion);
+	void getBundledOmpVersion(bundledOmp).then(version => {
+		if (version === null) return;
+		bundledVersion = version;
+		createMenu(windowManager, spawnWindow, bundledVersion);
+	});
 	setupDeepLinks(windowManager, spawnWindow);
 	setupUpdater();
 
