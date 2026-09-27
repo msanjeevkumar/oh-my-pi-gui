@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- **About dialog**: shows the GUI and bundled omp versions ([#3](https://github.com/msanjeevkumar/oh-my-pi-gui/pull/3) by [@msanjeevkumar](https://github.com/msanjeevkumar)).
 - **Image attachments**: the attachment button opens the native file picker reliably in packaged Linux builds.
 - **Model switching**: slow switches have more time to finish, and connection failures display an error.
 - **Quota display**: Kimi and other providers with unspecified quota units show the known usage percentage instead of an internal `unknown` label.
