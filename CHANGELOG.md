@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **About dialog**: shows the GUI and bundled omp versions ([#11](https://github.com/nornzach/oh-my-pi-gui/pull/11) by [@msanjeevkumar](https://github.com/msanjeevkumar)).
+
 ## [0.9.10] - 2026-09-24
 
 ### Added
