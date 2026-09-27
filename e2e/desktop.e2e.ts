@@ -58,8 +58,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-	// Test teardown bypasses the production quit confirmation.
-	if (app) await app.evaluate(({ app }) => app.exit(0));
+	if (app) await app.close();
 	if (record) await fs.copyFile(record, "test-results/desktop-rpc.jsonl").catch(() => {});
 	if (profile) await fs.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });

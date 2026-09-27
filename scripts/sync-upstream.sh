@@ -45,7 +45,7 @@ else
 fi
 
 say "3/7 bun install"
-bun install
+bun install --network-concurrency 8
 
 new_version="$(cd packages/coding-agent && node -p "require('./package.json').version" 2>/dev/null || true)"
 say "4/7 pi_natives for v$new_version"
