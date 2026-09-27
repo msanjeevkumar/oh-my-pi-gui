@@ -5,6 +5,7 @@ import { app, Menu, type MenuItemConstructorOptions, shell } from "electron";
 import { nativeAccelerator } from "../shared/hotkeys";
 import { IPC_EVENTS, type MenuAction } from "../shared/ipc-types";
 import { getMainLanguage, mainT } from "./i18n";
+import { appVersion } from "./updater";
 import type { SpawnWindow, WindowManager } from "./window";
 
 function sendMenuAction(windowManager: WindowManager, spawnWindow: SpawnWindow, action: MenuAction): void {
@@ -21,8 +22,15 @@ function sendMenuAction(windowManager: WindowManager, spawnWindow: SpawnWindow, 
 	});
 }
 
-export function createMenu(windowManager: WindowManager, spawnWindow: SpawnWindow): void {
+export function createMenu(windowManager: WindowManager, spawnWindow: SpawnWindow, bundledVersion: string | null): void {
 	const language = getMainLanguage();
+	app.setAboutPanelOptions({
+		applicationName: "omp-gui",
+		applicationVersion: mainT("about.versions", language, {
+			gui: appVersion(),
+			omp: bundledVersion ?? mainT("about.unavailable", language),
+		}),
+	});
 	// Chord rule: a shortcut the renderer keymap owns must NOT also be a menu
 	// accelerator. Electron resolves menu accelerators before the keydown reaches
 	// the webContents, so the duplicate would fire while the user's remap of the

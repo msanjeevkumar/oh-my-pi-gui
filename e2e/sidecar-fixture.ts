@@ -11,7 +11,9 @@ import type {
 } from "../src/shared/rpc-types";
 
 // A local protocol peer. No provider credentials, external network, or user session files.
-if (process.argv.includes("stats")) {
+if (process.argv.includes("--version")) {
+	process.stdout.write("omp/0.0.0-test\n");
+} else if (process.argv.includes("stats")) {
 	const binary = process.env.OMP_GUI_TEST_STATS_BINARY;
 	if (binary) {
 		const child = Bun.spawn([binary, ...process.argv.slice(2)], {

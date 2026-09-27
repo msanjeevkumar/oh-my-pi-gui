@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 /** Filename of the bundled omp sidecar on this platform. */
 export function bundledOmpFilename(): string {
@@ -15,4 +17,19 @@ export function resolveOmpCandidate(...parts: string[]): string | null {
 		if (existsSync(withExe)) return withExe;
 	}
 	return null;
+}
+
+/** Read the version from the same bundled binary used for GUI sessions. */
+export async function getBundledOmpVersion(binaryPath: string | null): Promise<string | null> {
+	if (!binaryPath) return null;
+	try {
+		const { stdout } = await promisify(execFile)(resolve(binaryPath), ["--version"], {
+			timeout: 5000,
+			maxBuffer: 1024,
+			windowsHide: true,
+		});
+		return /^omp\/(\S+)$/.exec(stdout.trim())?.[1] ?? null;
+	} catch {
+		return null;
+	}
 }
