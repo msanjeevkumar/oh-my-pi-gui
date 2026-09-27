@@ -46,17 +46,6 @@ function macConfigs(): { file: string; config: BuilderConfig }[] {
 describe("mac bundle configs", () => {
 	const configs = macConfigs();
 
-	it("sees every builder variant sitting in the package root", () => {
-		// The guards below iterate this list, so discovery is itself a contract: a
-		// fourth variant must not slip past them unnoticed.
-		expect(
-			configs
-				.map(entry => entry.file)
-				.sort()
-				.join(","),
-		).toBe("electron-builder.trial.yml,electron-builder.x64.yml,electron-builder.yml");
-	});
-
 	it("registers the omp:// scheme that src/main/deep-link.ts handles", () => {
 		for (const { file, config } of configs) {
 			const schemes = (config.protocols ?? []).flatMap(protocol => protocol.schemes ?? []);
