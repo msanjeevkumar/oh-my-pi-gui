@@ -4,6 +4,8 @@ import Store from "electron-store";
 export type MainLanguage = "en" | "zh";
 
 type MainTextKey =
+	| "about.unavailable"
+	| "about.versions"
 	| "dialog.openProject"
 	| "menu.about"
 	| "menu.addToDictionary"
@@ -31,6 +33,8 @@ type MainTextKey =
 	| "updates.unsupportedArchitecture";
 
 const TEXT: Record<MainTextKey, Record<MainLanguage, string>> = {
+	"about.unavailable": { en: "unavailable", zh: "不可用" },
+	"about.versions": { en: "GUI {gui} · Bundled omp {omp}", zh: "GUI {gui} · 内置 omp {omp}" },
 	"dialog.openProject": { en: "Open project", zh: "打开项目" },
 	"menu.about": { en: "About omp", zh: "关于 omp" },
 	"menu.addToDictionary": { en: "Add to dictionary", zh: "添加到词典" },
