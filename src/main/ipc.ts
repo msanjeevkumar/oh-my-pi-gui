@@ -73,6 +73,7 @@ export interface IpcDeps {
 	logWatcher: LogWatcher;
 	windowManager: WindowManager;
 	benchmarkBinaryPath: string | null;
+	getBundledVersion: () => string | null;
 	benchmarkEnv: () => Promise<NodeJS.ProcessEnv>;
 	/** Spawn a window with its own sidecar (index.ts's pool-backed helper). */
 	spawnWindow: SpawnWindow;
@@ -855,7 +856,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		}
 		prefsStore.set(payload.key, payload.value);
 		if (payload.key === "language" && (payload.value === "en" || payload.value === "zh")) {
-			createMenu(windowManager, deps.spawnWindow);
+			createMenu(windowManager, deps.spawnWindow, deps.getBundledVersion());
 		}
 	});
 

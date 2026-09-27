@@ -44,7 +44,7 @@ const PROGRESS_INTERVAL_MS = 100;
  * "36.9.5"), so dev resolves the project's package.json from the bundle
  * location instead. Packaged builds keep app.getVersion().
  */
-function appVersion(): string {
+export function appVersion(): string {
 	if (app.isPackaged) return app.getVersion();
 	try {
 		// out/main/index.js → ../../package.json (dev bundle layout).
