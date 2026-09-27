@@ -6,6 +6,7 @@ import {
 	withSessionRuntime,
 } from "../stores/session-runtime-context";
 import { createTabRpc } from "./tab-rpc";
+
 /**
  * Declarative command registry: maps every known slash command to a typed
  * UI affordance so the GUI can present them as first-class menu actions
@@ -21,6 +22,7 @@ import { createTabRpc } from "./tab-rpc";
  * - `unavailable` — non-text command lacking a native GUI affordance
  */
 
+import type { SessionKind } from "../../shared/ipc-types";
 import type { AvailableCommand, CopyTarget, RpcResponse } from "../../shared/rpc-types";
 import { hydrateSession, hydrateTabSession } from "../hooks/use-rpc-events";
 import { newSessionNow } from "../hooks/use-session-switch";
@@ -28,10 +30,11 @@ import { openHandoffDialog } from "../stores/fork-handoff";
 import { useModelStore } from "../stores/model";
 import { type SessionStore, useSessionStore } from "../stores/session";
 import { useSettingsStore } from "../stores/settings";
-import { useTabsStore } from "../stores/tabs";
+import { activeTabKind, useTabsStore } from "../stores/tabs";
 import { toast } from "../stores/toast";
 import { useTodoStore } from "../stores/todo";
 import { type DockCardId, useUiStore } from "../stores/ui";
+import { isCommandAvailable } from "./command-availability";
 import { exportSessionHtml } from "./export-session";
 import { copyText } from "./format";
 import { translate } from "./i18n";
@@ -44,13 +47,18 @@ import {
 import { copyTodosToClipboard, dumpTranscriptToClipboard, exportTodos, importTodosFromFile } from "./transcript-copy";
 import { addWorkspaceDirectory, moveSessionTo, pickWorkspaceDirectory } from "./workspace-dirs";
 
+/**
+ * `action` and `prompt` carry `argUsage` when the command needs user text
+ * before it can run: the palette has no argument entry, so those rows hand the
+ * command back to the composer instead of dispatching it argument-less.
+ */
 export type CommandAffordance =
-	| { kind: "action"; run: (args?: string) => unknown; status?: string }
+	| { kind: "action"; run: (args?: string) => unknown; status?: string; argUsage?: string }
 	| { kind: "toggle"; get: () => boolean; set: (enabled: boolean) => unknown }
 	| { kind: "picker"; open: () => void }
 	| { kind: "window"; open: () => void }
 	| { kind: "submenu"; items: CommandMenuItem[] }
-	| { kind: "prompt"; text: string; hint?: string }
+	| { kind: "prompt"; text: string; argUsage?: string }
 	| { kind: "unavailable"; reason: string };
 
 export interface CommandMenuItem {
@@ -82,6 +90,11 @@ export interface CommandRegistryContext {
 	 * non-component callers pass the module-scope `translate()`.
 	 */
 	t: (key: string, params?: Record<string, string | number>) => string;
+	/**
+	 * Kind of the tab this menu is built for. Required: chat tabs run without
+	 * tools, and a menu that ignores it offers commands that do nothing.
+	 */
+	tabKind: SessionKind;
 	isStreaming: boolean;
 	fastModeEnabled: boolean;
 	autoCompaction: boolean;
@@ -154,7 +167,7 @@ export interface CommandRegistryContext {
  */
 
 /** Helper to build a prompt affordance. */
-const p = (text: string, hint?: string): CommandAffordance => ({ kind: "prompt", text, hint });
+const p = (text: string, argUsage?: string): CommandAffordance => ({ kind: "prompt", text, argUsage });
 
 /**
  * Locale key stem for a command name: hyphens camelCase, spaces become dots
@@ -195,6 +208,24 @@ export async function runSessionCommand(
 	}
 }
 
+/** Restart the focused tab's sidecar without interrupting an active turn. */
+export async function restartSidecarFromGui(): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const session = runtime
+		? sessionRuntimeStore<SessionStore>(runtime.tabId, "session")?.getState()
+		: useSessionStore.getState();
+	if (session?.isStreaming || session?.isCompacting) {
+		toast({ variant: "warning", message: translate("sessionSwitch.busyBlocked") });
+		return;
+	}
+	try {
+		await window.omp.sidecar.restart({ tabId: runtime?.tabId, sessionPath: session?.sessionFile ?? undefined });
+		toast({ variant: "info", message: translate("settings.launch.restarting") });
+	} catch (cause) {
+		toast({ variant: "error", title: translate("app.actionFailed"), message: String(cause) });
+	}
+}
+
 export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[] {
 	const { t } = ctx;
 	const runtime = focusedSessionRuntime();
@@ -204,20 +235,31 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			? createTabRpc(activeTabCommand)
 			: window.omp.rpc;
 	const items: CommandMenuItem[] = [];
-	const seen = new Set<string>();
+	/** Every name the menu claims: item names plus their aliases. */
+	const claimed = new Set<string>();
 
+	/**
+	 * Single insertion point. A command that cannot run in this tab kind is
+	 * downgraded to a disabled row carrying the reason, so no surface can
+	 * offer (or execute) a silent no-op.
+	 */
 	const add = (item: CommandMenuItem) => {
-		if (seen.has(item.name)) return;
-		seen.add(item.name);
-		items.push(item);
+		if (claimed.has(item.name)) return;
+		claimed.add(item.name);
+		for (const alias of item.aliases ?? []) claimed.add(alias);
+		items.push(
+			isCommandAvailable(ctx.tabKind, item.name)
+				? item
+				: { ...item, affordance: { kind: "unavailable", reason: t("unavailable.chatSession") } },
+		);
 	};
 
 	/** Helper to build a submenu item; the label resolves through the ctx translator. */
-	const sub = (name: string, text: string, hint?: string): CommandMenuItem => ({
+	const sub = (name: string, text: string, argUsage?: string): CommandMenuItem => ({
 		name,
 		label: t(`cmd.${keyOf(name)}`),
 		category: "extensions",
-		affordance: p(text, hint),
+		affordance: p(text, argUsage),
 	});
 
 	/** Helper to build a submenu item executing a native action (RPC/store) instead of prompt text. */
@@ -236,14 +278,6 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		affordance: { kind: "window", open },
 	});
 
-	/** Helper to build a disabled submenu item whose reason replaces the prompt affordance. */
-	const subUnavailable = (name: string, reason: string): CommandMenuItem => ({
-		name,
-		label: t(`cmd.${keyOf(name)}`),
-		category: "extensions",
-		affordance: { kind: "unavailable", reason },
-	});
-
 	/** Read a single setting for status toasts; RPC failures throw for the palette to surface. */
 	const readSetting = async (path: string): Promise<unknown> => {
 		const res = await boundRpc.getSettings([path]);
@@ -260,6 +294,8 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		if (!res.success) throw new Error(res.error);
 		toast({ variant: "success", message });
 	};
+
+	const restartSidecar = restartSidecarFromGui;
 
 	/** /advisor on|off — set_setting live-applies advisor.enabled and reports activation state. */
 	const setAdvisor = async (enabled: boolean): Promise<void> => {
@@ -514,19 +550,36 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		affordance: { kind: "window", open: ctx.openSessionTree },
 	});
 	add({
-		name: "drop",
-		label: t("cmd.drop"),
+		name: "delete",
+		aliases: ["drop"],
+		label: t("cmd.delete"),
 		description: t("cmd.drop.desc"),
 		category: "session",
 		affordance: { kind: "action", run: dropSessionFromGui },
 	});
 	add({
+		name: "close",
+		label: t("cmd.close"),
+		description: t("cmd.close.desc"),
+		category: "session",
+		affordance: { kind: "action", run: () => window.close() },
+	});
+	add({
+		name: "restart",
+		label: t("cmd.restart"),
+		description: t("cmd.restart.desc"),
+		category: "other",
+		affordance: { kind: "action", run: restartSidecar },
+	});
+	add({
+		// `window.close()` used to hide behind this name, which left every other
+		// window (and its running agents) open while reporting the app as quit.
 		name: "quit",
 		aliases: ["exit"],
 		label: t("cmd.quit"),
 		description: t("cmd.quit.desc"),
 		category: "session",
-		affordance: { kind: "action", run: () => window.close() },
+		affordance: { kind: "action", run: () => window.omp.app.quit() },
 	});
 	add({
 		name: "retry",
@@ -837,6 +890,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		label: t("cmd.providers"),
 		description: t("cmd.providers.desc"),
 		category: "providers",
+		aliases: ["setup"],
 		affordance: { kind: "window", open: ctx.openProviders },
 	});
 	add({
@@ -856,15 +910,15 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 	});
 	add({
 		name: "login",
-		label: t("cmd.login"),
-		description: t("cmd.login.desc"),
+		label: t("cmd.openLogin"),
+		description: t("cmd.openLogin.desc"),
 		category: "providers",
 		affordance: { kind: "window", open: ctx.openProviders },
 	});
 	add({
 		name: "logout",
-		label: t("cmd.logout"),
-		description: t("cmd.logout.desc"),
+		label: t("cmd.openLogout"),
+		description: t("cmd.openLogout.desc"),
 		category: "providers",
 		affordance: { kind: "window", open: ctx.openProviders },
 	});
@@ -1065,12 +1119,10 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		affordance: {
 			kind: "submenu",
 			items: [
-				// No native SSH hosts surface exists in the GUI (hosts live in
-				// ssh.json capability files; no RPC or fs-write bridge), so these
-				// show disabled-with-reason instead of faking a prompt round-trip.
-				subUnavailable("ssh list", t("ssh.noSurface")),
-				subUnavailable("ssh add", t("ssh.noSurface")),
-				subUnavailable("ssh remove", t("ssh.noSurface")),
+				// The native page owns host selection, validation, and confirmation.
+				subWindow("ssh list", () => ctx.openSettings("ssh")),
+				subWindow("ssh add", () => ctx.openSettings("ssh")),
+				subWindow("ssh remove", () => ctx.openSettings("ssh")),
 				sub("ssh help", "/ssh help"),
 			],
 		},
@@ -1115,6 +1167,15 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		description: t("cmd.loop.desc"),
 		category: "modes",
 		affordance: { kind: "window", open: () => ctx.openModes("loop") },
+	});
+	// The Modes window is the native form of TUI /modes; without this row the
+	// sidecar-advertised command merges in as a dead "TUI-only" entry.
+	add({
+		name: "modes",
+		label: t("cmd.modes"),
+		description: t("cmd.modes.desc"),
+		category: "modes",
+		affordance: { kind: "window", open: () => ctx.openModes() },
 	});
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -1169,6 +1230,13 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		description: t("cmd.dirs.desc"),
 		category: "workspace",
 		affordance: { kind: "window", open: () => useUiStore.getState().openWorkspaceDirs() },
+	});
+	add({
+		name: "git",
+		label: t("cmd.git"),
+		description: t("cmd.git.desc"),
+		category: "workspace",
+		affordance: { kind: "window", open: () => useUiStore.getState().setPanelTab("diff") },
 	});
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -1240,6 +1308,13 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		affordance: { kind: "window", open: () => ctx.openAgentHub() },
 	});
 	add({
+		name: "hub",
+		label: t("cmd.hub"),
+		description: t("cmd.hub.desc"),
+		category: "view",
+		affordance: { kind: "window", open: () => ctx.openAgentHub("hub") },
+	});
+	add({
 		name: "prs",
 		label: t("cmd.prCenter"),
 		description: t("cmd.prCenter.desc"),
@@ -1262,7 +1337,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		label: t("cmd.join"),
 		description: t("cmd.join.desc"),
 		category: "other",
-		affordance: { kind: "action", run: link => joinCollab(link) },
+		affordance: { kind: "action", argUsage: "<collab-link>", run: link => joinCollab(link) },
 	});
 	add({
 		name: "leave",
@@ -1282,6 +1357,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		category: "other",
 		affordance: {
 			kind: "action",
+			argUsage: "<question>",
 			run: question => {
 				const trimmed = question?.trim();
 				if (!trimmed) {
@@ -1297,14 +1373,14 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		label: t("cmd.tan"),
 		description: t("cmd.tan.desc"),
 		category: "other",
-		affordance: { kind: "action", run: work => dispatchTan(work) },
+		affordance: { kind: "action", argUsage: "<work>", run: work => dispatchTan(work) },
 	});
 	add({
 		name: "omfg",
 		label: t("cmd.omfg"),
 		description: t("cmd.omfg.desc"),
 		category: "other",
-		affordance: { kind: "action", run: complaint => forgeTtsrRule(complaint) },
+		affordance: { kind: "action", argUsage: "<complaint>", run: complaint => forgeTtsrRule(complaint) },
 	});
 	add({
 		name: "debug",
@@ -1367,22 +1443,25 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		},
 	});
 
-	// Merge sidecar-advertised commands not already covered.
+	// Merge sidecar-advertised commands not already covered. A name claimed by
+	// a native item — as its name OR one of its aliases — is dropped: `/models`
+	// and `/modes` must not appear as dead rows next to the working picker.
 	for (const cmd of ctx.availableCommands) {
-		if (seen.has(cmd.name)) continue;
+		if (claimed.has(cmd.name)) continue;
+		// Keep terminal-only commands visible as disabled rows. The palette is
+		// the GUI's command index; hiding a command makes its client limitation opaque.
 		if (cmd.textModeExecutable === false) {
 			add({
 				name: cmd.name,
 				label: `/${cmd.name}`,
 				description: cmd.description,
 				category: "other",
-				affordance: { kind: "unavailable", reason: t("unavailable.tuiOnly") },
+				affordance: { kind: "unavailable", reason: t("palette.tuiOnly") },
 			});
 			continue;
 		}
 		add({
 			name: cmd.name,
-
 			label: `/${cmd.name}`,
 			description: cmd.description,
 			category: "other",
@@ -1393,10 +1472,28 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 	return items;
 }
 
-/** /queue prefill: focus the composer with the yield-queue shorthand ("-> "),
- *  reusing the omp:fill-composer channel (starter cards, session-tree restore). */
+/** Hand text to the composer and focus it (the omp:fill-composer channel also
+ *  serves starter cards, dequeue restore, and session-tree restore). */
+export function prefillComposer(text: string): void {
+	window.dispatchEvent(new CustomEvent("omp:fill-composer", { detail: { text } }));
+}
+
+/** /queue prefill: focus the composer with the yield-queue shorthand ("-> "). */
 function prefillQueueShorthand(): void {
-	window.dispatchEvent(new CustomEvent("omp:fill-composer", { detail: { text: "-> " } }));
+	prefillComposer("-> ");
+}
+
+/**
+ * The composer text a palette row needs from the user, or null when the row can
+ * run as-is. The palette has no argument entry, so a parameterized command
+ * returns its own slash form for the composer instead of being dispatched
+ * without its argument (which only ever produced a `Usage:` reply).
+ */
+export function commandArgPrefill(item: CommandMenuItem): string | null {
+	const affordance = item.affordance;
+	if (affordance.kind === "prompt") return affordance.argUsage === undefined ? null : affordance.text;
+	if (affordance.kind === "action") return affordance.argUsage === undefined ? null : `/${item.name} `;
+	return null;
 }
 
 /** /shake elide|images|thinking: confirm, then drop context via shake_context RPC;
@@ -1627,6 +1724,7 @@ export function buildCurrentCommandMenu(availableCommands: AvailableCommand[]): 
 	const ui = useUiStore.getState();
 	return buildCommandMenu({
 		t: translate,
+		tabKind: activeTabKind(),
 		isStreaming: session.isStreaming,
 		fastModeEnabled: model.fastModeEnabled,
 		autoCompaction: settings.autoCompaction,

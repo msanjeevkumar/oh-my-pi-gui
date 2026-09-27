@@ -1,7 +1,7 @@
 /**
  * Formatting + small value-extraction utilities shared by renderer components.
- * No runtime dependencies.
  */
+import { parseAnsi } from "./ansi";
 import { getCurrentLanguage, translate } from "./i18n";
 import { PREVIEW_TEXT_CHARS } from "./preview";
 
@@ -209,6 +209,14 @@ export function shortenPath(path: string): string {
 	return display;
 }
 
+/** Plain tool text: strip terminal controls/links and expand tabs before display. */
+export function sanitizeToolText(text: string): string {
+	return parseAnsi(text)
+		.map(segment => segment.text)
+		.join("")
+		.replace(/\t/g, "    ");
+}
+
 /** First N lines within the shared DOM character ceiling. */
 export function headLines(text: string, max: number): { head: string; omitted: number } {
 	const charTruncated = text.length > PREVIEW_TEXT_CHARS;
@@ -298,6 +306,11 @@ function collectImageDataUrls(value: unknown, keys: readonly string[], depth = 0
 			if (src.type === "url" && typeof src.url === "string" && src.url.startsWith("data:image/")) {
 				return [src.url];
 			}
+		}
+		if (typeof r.data === "string" && typeof r.mimeType === "string" && r.mimeType.startsWith("image/")) {
+			// `generate_image` reports its pictures as bare `{ data, mimeType }`
+			// pairs under `details.images` — same bytes, no content-block tag.
+			return [`data:${r.mimeType};base64,${r.data}`];
 		}
 		return keys.flatMap(key => collectImageDataUrls(r[key], keys, depth + 1));
 	}

@@ -5,12 +5,14 @@ import { useTabRpc } from "../../lib/tab-rpc";
  * window usage. Replaces the forwarded "/session info" text command.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { SessionStats } from "../../../shared/rpc-types";
+import { contextUsageView } from "../../lib/context-usage";
 import { basename, formatCost, formatPercent, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
-import { Modal, ProgressBar, Spinner } from "../common";
+import { AsyncSection, Modal, ProgressBar } from "../common";
 
 interface Row {
 	label: string;
@@ -43,6 +45,7 @@ function formatCredit(value: number): string {
 export function SessionInfoDialog() {
 	const tabRpc = useTabRpc();
 	const t = useT();
+	const sidecarReady = useSessionStore(state => state.status) === "ready";
 	const open = useUiStore(state => state.sessionInfoOpen);
 	const close = useUiStore(state => state.closeSessionInfo);
 
@@ -50,42 +53,45 @@ export function SessionInfoDialog() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	useEffect(() => {
-		if (!open) return;
+	const reload = useCallback(async () => {
+		if (!sidecarReady) {
+			setStats(null);
+			setError(t("common.notConnected"));
+			return;
+		}
 		setLoading(true);
 		setError(null);
+		try {
+			const response = await tabRpc.getSessionStats();
+			if (response.success) setStats(response.data as SessionStats);
+			else setError(response.error);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setLoading(false);
+		}
+	}, [sidecarReady, t, tabRpc.getSessionStats]);
+
+	useEffect(() => {
+		if (!open) return;
 		setStats(null);
-		let cancelled = false;
-		void tabRpc
-			.getSessionStats()
-			.then(response => {
-				if (cancelled) return;
-				if (response.success) setStats(response.data as SessionStats);
-				else setError(response.error);
-			})
-			.catch(cause => {
-				if (!cancelled) setError(String(cause));
-			})
-			.finally(() => {
-				if (!cancelled) setLoading(false);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, tabRpc.getSessionStats]);
+		void reload();
+	}, [open, reload]);
+
+	const contextView = stats?.contextUsage ? contextUsageView(stats.contextUsage) : null;
 
 	return (
 		<Modal open={open} onClose={close} title={t("sessionInfo.title")} size="md">
-			<div className="flex flex-col gap-4">
-				{error ? (
-					<div className="py-8 text-center text-xs text-[var(--omp-error)]">{error}</div>
-				) : loading || !stats ? (
-					<div className="flex items-center justify-center gap-2 py-8">
-						<Spinner size="sm" />
-						<span className="text-xs text-(--omp-dim)">{t("sessionInfo.loading")}</span>
-					</div>
-				) : (
-					<>
+			<AsyncSection
+				className="py-8"
+				error={error}
+				hasData={stats !== null}
+				loading={loading}
+				loadingLabel={t("sessionInfo.loading")}
+				onRetry={() => void reload()}
+			>
+				{stats && (
+					<div className="flex flex-col gap-4">
 						{stats.history && (
 							<Section
 								title={t("sessionInfo.history")}
@@ -161,31 +167,39 @@ export function SessionInfoDialog() {
 									.map(([id, count]) => ({ label: id, value: String(count) }))}
 							/>
 						)}
-						{stats.contextUsage && (
+						{stats.contextUsage && contextView && (
 							<section>
 								<h3 className="mb-1 text-omp-xxs font-semibold tracking-widest text-(--omp-dim) uppercase">
 									{t("sessionInfo.contextWindow")}
 								</h3>
 								<div className="rounded-md border border-(--omp-border-muted) px-2.5 py-2">
 									<ProgressBar
-										value={stats.contextUsage.percent / 100}
-										valueText={formatPercent(stats.contextUsage.percent, 1)}
+										value={contextView.capacityKnown ? contextView.percent / 100 : 0}
+										valueText={
+											contextView.capacityKnown
+												? formatPercent(contextView.percent, 1)
+												: t("contextUsage.windowUnknown")
+										}
 									/>
 									<div className="mt-1.5 flex items-center justify-between text-omp-xs text-(--omp-muted)">
 										<span>
-											{formatTokens(stats.contextUsage.tokens)} /{" "}
-											{formatTokens(stats.contextUsage.contextWindow)} {t("sessionInfo.tokens")}
+											{contextView.capacityKnown
+												? `${formatTokens(contextView.usedTokens)} / ${formatTokens(contextView.contextWindow)}`
+												: formatTokens(contextView.usedTokens)}{" "}
+											{t("sessionInfo.tokens")}
 										</span>
 										<span className="font-mono tabular-nums">
-											{formatPercent(stats.contextUsage.percent, 1)}
+											{contextView.capacityKnown
+												? formatPercent(contextView.percent, 1)
+												: formatTokens(null)}
 										</span>
 									</div>
 								</div>
 							</section>
 						)}
-					</>
+					</div>
 				)}
-			</div>
+			</AsyncSection>
 		</Modal>
 	);
 }

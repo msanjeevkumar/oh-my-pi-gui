@@ -1,4 +1,6 @@
+import { useOverlayPresence } from "../../hooks/use-overlay-presence";
 import { useDisplayPreference } from "../../lib/display-preferences";
+import { onEscape } from "../../lib/keymap";
 /**
  * Compact composer entry for session modes and lower-frequency coding
  * toggles. The trigger surfaces active mode count; the menu keeps every
@@ -6,7 +8,7 @@ import { useDisplayPreference } from "../../lib/display-preferences";
  * second settings row.
  */
 
-import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { RpcResponse, RpcSessionState } from "../../../shared/rpc-types";
@@ -38,6 +40,7 @@ export function ComposerModes() {
 	const loopMode = useSessionStore(s => s.loopMode);
 	const loopActive = loopMode?.enabled === true;
 	const vibeModeEnabled = useSessionStore(s => s.vibeModeEnabled);
+	const prewalkArmed = useSessionStore(s => s.prewalkArmed);
 	const goalStatusInFooter = useDisplayPreference("goalStatusInFooter");
 	const autoCompaction = useSettingsStore(s => s.autoCompaction);
 	const autoRetry = useSettingsStore(s => s.autoRetry);
@@ -48,6 +51,7 @@ export function ComposerModes() {
 
 	const [pending, setPending] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
+	const { mounted: menuMounted, closing: menuClosing } = useOverlayPresence(menuOpen);
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
 	const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -56,6 +60,7 @@ export function ComposerModes() {
 	const loopArgs = loopLimit ? loopLimitText(t, loopLimit) : t("modesPanel.loop.noLimit");
 	const activeModeLabels = [
 		planModeEnabled ? t("input.plan.label") : null,
+		prewalkArmed ? t("cmd.prewalk") : null,
 		goalStatusInFooter && goalActive ? t("modesPanel.tabs.goal") : null,
 		loopActive ? t("modesPanel.tabs.loop") : null,
 		vibeModeEnabled ? t("modesPanel.tabs.vibe") : null,
@@ -84,7 +89,7 @@ export function ComposerModes() {
 			setMenuOpen(false);
 		};
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setMenuOpen(false);
+			onEscape(event, () => setMenuOpen(false));
 		};
 		document.addEventListener("pointerdown", onDown);
 		document.addEventListener("keydown", onKeyDown);
@@ -94,7 +99,7 @@ export function ComposerModes() {
 		};
 	}, [menuOpen]);
 
-	const update = async (action: () => Promise<RpcResponse>, mode: "settings" | "plan" = "settings") => {
+	const update = async (action: () => Promise<RpcResponse>, mode: "settings" | "plan" | "prewalk" = "settings") => {
 		if (pending) return;
 		const session = sessionRuntimeStore<SessionStore>(tabId, "session") ?? useSessionStore;
 		const settings = sessionRuntimeStore<SettingsStore>(tabId, "settings") ?? useSettingsStore;
@@ -106,6 +111,10 @@ export function ComposerModes() {
 			const plan = response.data as { enabled?: boolean } | undefined;
 			if (mode === "plan" && typeof plan?.enabled === "boolean") {
 				if (session.getState().sessionId === originSession) session.setState({ planModeEnabled: plan.enabled });
+				return;
+			}
+			if (mode === "prewalk" && typeof plan?.enabled === "boolean") {
+				if (session.getState().sessionId === originSession) session.setState({ prewalkArmed: plan.enabled });
 				return;
 			}
 			const current = await rpc.getState();
@@ -149,15 +158,19 @@ export function ComposerModes() {
 				<ChevronDown size={12} className="shrink-0 text-[var(--omp-dim)]" />
 			</button>
 
-			{menuOpen && pos
+			{menuMounted && pos
 				? createPortal(
 						<div
 							ref={menuRef}
 							style={{ left: pos.left, bottom: pos.bottom }}
-							className="fixed z-[100] w-64 overflow-hidden rounded-xl border border-[var(--omp-border)] bg-[var(--omp-panel-bg)] p-1 shadow-[var(--omp-shadow-md)]"
+							aria-hidden={menuClosing || undefined}
+							className={cx(
+								"fixed z-[100] w-64 overflow-hidden rounded-xl border border-[var(--omp-border)] bg-[var(--omp-panel-bg)] p-1 shadow-[var(--omp-shadow-md)]",
+								menuClosing ? "omp-scale-out pointer-events-none" : "omp-pop-in",
+							)}
 							role="menu"
 							aria-busy={pending}
-							inert={pending}
+							inert={pending || menuClosing}
 						>
 							<ModeRow
 								label={t("input.plan.label")}
@@ -174,6 +187,7 @@ export function ComposerModes() {
 											: t("input.goal.title")
 									}
 									checked={goalActive}
+									navigates
 									onSelect={() => select(() => openModes("goal"))}
 								/>
 							)}
@@ -181,18 +195,21 @@ export function ComposerModes() {
 								label={t("modesPanel.tabs.loop")}
 								title={loopActive ? t("input.loop.activeTitle", { args: loopArgs }) : t("input.loop.title")}
 								checked={loopActive}
+								navigates
 								onSelect={() => select(() => openModes("loop"))}
 							/>
 							<ModeRow
 								label={t("modesPanel.tabs.vibe")}
 								title={t("modesPanel.tabs.vibe")}
 								checked={vibeModeEnabled}
+								navigates
 								onSelect={() => select(() => openModes("vibe"))}
 							/>
 							<ModeRow
 								label={t("input.roles.label")}
 								title={t("input.roles.title")}
 								checked={false}
+								navigates
 								onSelect={() => select(openModelRoles)}
 							/>
 							<div className="mx-2 my-1 border-t border-[var(--omp-border-muted)]" />
@@ -208,6 +225,11 @@ export function ComposerModes() {
 								label={t("input.more.autoRetry")}
 								checked={autoRetry}
 								onToggle={() => void update(() => rpc.setAutoRetry(!autoRetry))}
+							/>
+							<MoreRow
+								label={t("cmd.prewalk")}
+								checked={prewalkArmed}
+								onToggle={() => void update(() => rpc.setPrewalk(!prewalkArmed), "prewalk")}
 							/>
 							<MoreRow
 								label={t("input.more.steeringAll")}
@@ -237,11 +259,13 @@ function ModeRow({
 	label,
 	title,
 	checked,
+	navigates,
 	onSelect,
 }: {
 	label: string;
 	title: string;
 	checked: boolean;
+	navigates?: boolean;
 	onSelect: () => void;
 }) {
 	return (
@@ -255,6 +279,7 @@ function ModeRow({
 		>
 			<span className="min-w-0 flex-1 truncate">{label}</span>
 			{checked && <Check size={13} className="shrink-0 text-[var(--omp-accent)]" strokeWidth={3} />}
+			{navigates && <ChevronRight size={13} className="shrink-0 text-[var(--omp-dim)]" />}
 		</button>
 	);
 }

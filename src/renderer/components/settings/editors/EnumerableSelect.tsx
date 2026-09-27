@@ -1,7 +1,7 @@
 /**
  * Searchable dropdown for string settings whose value domain is enumerable
  * (theme names, shell paths, …) — the "don't make me hand-type this" control.
- * Options are fetched lazily on first open (module-wide cache per fetcher).
+ * Options are fetched on every open; concurrent opens share one request.
  * Current value is pinned when it isn't in the list; a custom value can be
  * committed verbatim when `allowCustom` is set.
  */
@@ -10,6 +10,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cx } from "../../../lib/format";
 import { useT } from "../../../lib/i18n";
+import { isImeKeyEvent } from "../../../lib/ime";
 
 export interface EnumerableOption {
 	value: string;
@@ -35,15 +36,24 @@ export interface EnumerableSelectProps {
 	onPreview?: (value: string | null) => void;
 }
 
-const optionCache = new WeakMap<() => Promise<EnumerableOption[]>, Promise<EnumerableOption[]>>();
-function cached(fetcher: () => Promise<EnumerableOption[]>): Promise<EnumerableOption[]> {
-	let p = optionCache.get(fetcher);
-	if (!p) {
-		p = fetcher();
-		p.catch(() => optionCache.delete(fetcher));
-		optionCache.set(fetcher, p);
-	}
-	return p;
+type OptionsFetcher = () => Promise<EnumerableOption[]>;
+
+/**
+ * Dedupes requests that overlap, and nothing more. Caching settled results here
+ * made a shell installed after the first open invisible until a reload, and an
+ * empty answer indistinguishable from a fetcher that never ran.
+ */
+const inflight = new WeakMap<OptionsFetcher, Promise<EnumerableOption[]>>();
+function fetchOnce(fetcher: OptionsFetcher): Promise<EnumerableOption[]> {
+	const pending = inflight.get(fetcher);
+	if (pending) return pending;
+	const request = fetcher();
+	const settle = (): void => {
+		if (inflight.get(fetcher) === request) inflight.delete(fetcher);
+	};
+	request.then(settle, settle);
+	inflight.set(fetcher, request);
+	return request;
 }
 
 const TRIGGER_CLASS =
@@ -78,18 +88,29 @@ export function EnumerableSelect({
 	const listRef = useRef<HTMLDivElement>(null);
 	const listboxId = useId();
 
+	// `fetchOptions` is usually an inline arrow, so its identity changes with every
+	// parent render; the ref keeps that to one request per open and a fresh read
+	// on the next one.
+	const requestedForOpen = useRef(false);
+
 	useEffect(() => {
-		if (!open) return;
+		if (!open) {
+			requestedForOpen.current = false;
+			return;
+		}
 		let cancelled = false;
 		setError(false);
 		setActiveIndex(0);
-		cached(fetchOptions)
-			.then(result => {
-				if (!cancelled) setOptions(result);
-			})
-			.catch(() => {
-				if (!cancelled) setError(true);
-			});
+		if (!requestedForOpen.current) {
+			requestedForOpen.current = true;
+			fetchOnce(fetchOptions)
+				.then(result => {
+					if (!cancelled) setOptions(result);
+				})
+				.catch(() => {
+					if (!cancelled) setError(true);
+				});
+		}
 		requestAnimationFrame(() => searchRef.current?.focus());
 		return () => {
 			cancelled = true;
@@ -102,13 +123,20 @@ export function EnumerableSelect({
 			if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
 		};
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setOpen(false);
+			if (isImeKeyEvent(e)) return;
+			if (e.key !== "Escape") return;
+			// Only a keypress made inside this popup dismisses it, and capture +
+			// stopPropagation runs the claim before the dialog behind it (registered
+			// earlier on the same node) can take the same Escape.
+			if (!rootRef.current?.contains(e.target as Node)) return;
+			e.stopPropagation();
+			setOpen(false);
 		};
 		document.addEventListener("mousedown", onDown);
-		document.addEventListener("keydown", onKey);
+		document.addEventListener("keydown", onKey, true);
 		return () => {
 			document.removeEventListener("mousedown", onDown);
-			document.removeEventListener("keydown", onKey);
+			document.removeEventListener("keydown", onKey, true);
 		};
 	}, [open]);
 
@@ -301,7 +329,7 @@ export function EnumerableSelect({
 							onClick={() => {
 								setOptions(null);
 								setError(false);
-								void cached(fetchOptions)
+								void fetchOnce(fetchOptions)
 									.then(setOptions)
 									.catch(() => setError(true));
 							}}

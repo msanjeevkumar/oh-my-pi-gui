@@ -13,12 +13,13 @@
  * upserts merge over the existing entry instead of replacing it, so a rich
  * hand-written config never loses data to a GUI edit.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { parse, stringify } from "yaml";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import * as path from "node:path";
+import { type Document, parseDocument } from "yaml";
 import {
 	CUSTOM_MODEL_EFFORTS,
 	CUSTOM_PROVIDER_APIS,
+	type CustomModelEffort,
 	type CustomProviderApi,
 	type CustomProviderDiscovery,
 	type CustomProviderInput,
@@ -33,27 +34,106 @@ export type { CustomProviderInput, CustomProviderModelInput, CustomProviderView 
 
 const MASK_PREVIEW_LEN = 4;
 
-/** Provider ids shipped in the bundled catalog (not user-editable here). */
-const BUILTIN_PROVIDERS = new Set([
+/**
+ * Provider ids the agent already knows — a `models.yml` entry under one of
+ * these is an *override* of the built-in, not a custom provider, so the GUI
+ * must neither create nor delete it.
+ *
+ * Union of `KnownProvider` and `AuthProviderId`, generated from
+ * `packages/catalog/src/compat/{provider-ids,auth-ids}.ts` by
+ * `bun run gen:compat` in the monorepo. The GUI has no catalog dependency, so
+ * this is a checked-in copy: when the catalog adds a provider, a missing id
+ * here lets the GUI write a silent override.
+ */
+const BUILTIN_PROVIDERS: ReadonlySet<string> = new Set([
+	"abliteration",
+	"aiand",
+	"aimlapi",
+	"alibaba-coding-plan",
+	"alibaba-token-plan",
+	"amazon-bedrock",
 	"anthropic",
-	"openai",
-	"gemini",
-	"google",
-	"groq",
-	"mistral",
-	"openrouter",
-	"deepseek",
-	"xai",
 	"azure",
-	"bedrock",
-	"vertex",
-	"ollama",
-	"lm-studio",
-	"fireworks",
+	"baseten",
+	"bedrock-mantle",
 	"cerebras",
-	"together",
-	"cohere",
+	"charm-hyper",
+	"cline-pass",
+	"cloudflare-ai-gateway",
+	"commandcode",
+	"coreweave",
+	"cursor",
+	"deepinfra",
+	"deepseek",
+	"devin",
+	"exa",
+	"firepass",
+	"fireworks",
+	"github-copilot",
+	"gitlab-duo",
+	"gitlab-duo-agent",
+	"gmi-cloud",
+	"google",
+	"google-antigravity",
+	"google-gemini-cli",
+	"google-vertex",
+	"groq",
+	"huggingface",
+	"kagi",
+	"kilo",
+	"kimi-code",
+	"litellm",
+	"llama.cpp",
+	"lm-studio",
+	"local",
+	"meta",
+	"minimax",
+	"minimax-code",
+	"minimax-code-cn",
+	"mistral",
+	"moonshot",
+	"muse-code",
+	"nanogpt",
+	"novita",
+	"nvidia",
+	"ollama",
+	"ollama-cloud",
+	"openai",
+	"openai-codex",
+	"openai-codex-device",
+	"opencode-go",
+	"opencode-zen",
+	"openrouter",
+	"parallel",
 	"perplexity",
+	"qianfan",
+	"qwen-portal",
+	"sakana",
+	"siliconflow",
+	"siliconflow-cn",
+	"singularityapi",
+	"stencil",
+	"synthetic",
+	"tavily",
+	"together",
+	"typesafe",
+	"umans",
+	"venice",
+	"vercel-ai-gateway",
+	"vllm",
+	"wafer-serverless",
+	"web",
+	"xai",
+	"xai-oauth",
+	"xiaomi",
+	"xiaomi-token-plan-ams",
+	"xiaomi-token-plan-cn",
+	"xiaomi-token-plan-sgp",
+	"yolo-auto",
+	"zai",
+	"zai-coding-plan",
+	"zenmux",
+	"zhipu-coding-plan",
 ]);
 
 const DISCOVERY_TYPES: ReadonlySet<string> = new Set([
@@ -76,21 +156,52 @@ const THINKING_MODES: ReadonlySet<string> = new Set([
 /** Absolute path to the agent's models file (`models.yml` preferred, `models.yaml` fallback). */
 export function modelsPath(): string {
 	const dir = agentDir();
-	const yml = join(dir, "models.yml");
+	const yml = path.join(dir, "models.yml");
 	if (existsSync(yml)) return yml;
-	return join(dir, "models.yaml");
+	const legacy = path.join(dir, "models.yaml");
+	// A fresh install writes the preferred name; only an existing `models.yaml`
+	// keeps being used.
+	return existsSync(legacy) ? legacy : yml;
 }
 
-interface ModelsFileShape {
-	providers?: Record<string, unknown>;
-	[other: string]: unknown;
+interface ModelsFile {
+	/** The live document: an edit mutates this, and a save writes it back. */
+	doc: Document;
+	providers: Record<string, unknown>;
 }
 
-function readFile(): ModelsFileShape {
+function readModelsFile(): ModelsFile {
 	const file = modelsPath();
-	if (!existsSync(file)) return {};
-	const parsed = parse(readFileSync(file, "utf8"));
-	return parsed && typeof parsed === "object" ? (parsed as ModelsFileShape) : {};
+	if (!existsSync(file)) return { doc: parseDocument(""), providers: {} };
+	const doc = parseDocument(readFileSync(file, "utf8"));
+	const issue = doc.errors[0] ?? doc.warnings[0];
+	if (doc.errors.length > 0) throw new Error(`${file}: ${issue?.message ?? "invalid YAML"}`);
+	const contents = doc.toJS();
+	const providers = contents?.providers;
+	return {
+		doc,
+		providers: typeof providers === "object" && providers !== null ? (providers as Record<string, unknown>) : {},
+	};
+}
+
+let tmpCounter = 0;
+
+/**
+ * Swap the file in one step. The agent watches this path and live-reloads it,
+ * so a truncate-then-write leaves a window where a concurrent read sees an empty
+ * or half-written config — and a crash inside it destroys every provider.
+ */
+function writeModelsFile(doc: Document): void {
+	const file = modelsPath();
+	mkdirSync(path.dirname(file), { recursive: true });
+	const tmp = `${file}.tmp-${process.pid}-${tmpCounter++}`;
+	try {
+		writeFileSync(tmp, String(doc), "utf8");
+		renameSync(tmp, file);
+	} catch (error) {
+		rmSync(tmp, { force: true });
+		throw error;
+	}
 }
 
 function maskApiKey(key: unknown): { hasApiKey: boolean; apiKeyPreview?: string } {
@@ -141,16 +252,31 @@ function asCost(value: unknown): CustomProviderModelCost | undefined {
 	return Object.keys(cost).length > 0 ? cost : undefined;
 }
 
+/**
+ * Effort ladder as the agent's ModelThinkingSchema resolves it: `efforts` wins,
+ * then the legacy `levels` list, then the `minLevel`..`maxLevel` range. Without
+ * this a hand-written range config reads back as "no thinking" and the next save
+ * deletes the block.
+ */
+function thinkingEfforts(rec: Record<string, unknown>): CustomModelEffort[] {
+	const isEffort = (value: unknown): value is CustomModelEffort =>
+		typeof value === "string" && (CUSTOM_MODEL_EFFORTS as readonly string[]).includes(value);
+	const fromList = (value: unknown): CustomModelEffort[] => (Array.isArray(value) ? value.filter(isEffort) : []);
+	const explicit = fromList(rec.efforts);
+	if (explicit.length > 0) return explicit;
+	const levels = fromList(rec.levels);
+	if (levels.length > 0) return levels;
+	if (!isEffort(rec.minLevel) || !isEffort(rec.maxLevel)) return [];
+	const min = CUSTOM_MODEL_EFFORTS.indexOf(rec.minLevel);
+	const max = CUSTOM_MODEL_EFFORTS.indexOf(rec.maxLevel);
+	return CUSTOM_MODEL_EFFORTS.slice(min, Math.max(min, max) + 1);
+}
+
 function asThinking(value: unknown): CustomProviderModelThinking | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const rec = value as Record<string, unknown>;
 	if (typeof rec.mode !== "string" || !THINKING_MODES.has(rec.mode)) return undefined;
-	const efforts = Array.isArray(rec.efforts)
-		? rec.efforts.filter(
-				(e): e is CustomProviderModelThinking["efforts"][number] =>
-					typeof e === "string" && (CUSTOM_MODEL_EFFORTS as readonly string[]).includes(e),
-			)
-		: [];
+	const efforts = thinkingEfforts(rec);
 	if (efforts.length === 0) return undefined;
 	const thinking: CustomProviderModelThinking = {
 		mode: rec.mode as CustomProviderModelThinking["mode"],
@@ -246,8 +372,7 @@ function toView(id: string, raw: unknown): CustomProviderView & { apiKey?: strin
 
 /** List configured providers (custom + user overrides), apiKey masked. */
 export function listModelsProviders(): CustomProviderView[] {
-	const data = readFile();
-	const providers = data.providers ?? {};
+	const { providers } = readModelsFile();
 	return Object.entries(providers).map(([id, raw]) => {
 		const { apiKey: _secret, ...view } = toView(id, raw);
 		return view;
@@ -278,13 +403,21 @@ function mergeModel(existingModels: unknown, input: CustomProviderModelInput): R
 	setOrDelete(merged, "baseUrl", input.baseUrl);
 	setOrDelete(merged, "reasoning", input.reasoning);
 	// thinking: merge over the existing object so unrendered keys (effortMap,
-	// legacy levels/minLevel+maxLevel) survive a GUI edit of the efforts list.
+	// requiresEffort) survive a GUI edit of the efforts list.
 	if (input.thinking) {
 		const base =
 			existing?.thinking && typeof existing.thinking === "object"
 				? (existing.thinking as Record<string, unknown>)
 				: {};
-		merged.thinking = { ...base, ...input.thinking };
+		// The legacy range keys are the ladder this view already renders as
+		// `efforts`, so they are a second source of truth rather than an
+		// unrendered field: a later edit that shortens the ladder would leave a
+		// stale `levels`/`minLevel`+`maxLevel` claiming the old range.
+		const unrendered = { ...base };
+		delete unrendered.levels;
+		delete unrendered.minLevel;
+		delete unrendered.maxLevel;
+		merged.thinking = { ...unrendered, ...input.thinking };
 	} else {
 		delete merged.thinking;
 	}
@@ -299,15 +432,20 @@ function mergeModel(existingModels: unknown, input: CustomProviderModelInput): R
 	return { id: input.id, ...merged };
 }
 
-/** Insert or update a custom provider. Keeps the stored apiKey when not re-supplied. */
+/** Insert or update a custom provider. Keeps the stored apiKey unless the input
+ * re-supplies one or sets `clearApiKey`. */
 export function upsertModelsProvider(input: CustomProviderInput): void {
 	if (BUILTIN_PROVIDERS.has(input.id)) {
 		throw new Error(`"${input.id}" is a built-in provider id; choose a distinct custom id.`);
 	}
-	const data = readFile();
-	const existingRaw = data.providers?.[input.id];
+	const data = readModelsFile();
+	const existingRaw = data.providers[input.id];
 	const existing = toView(input.id, existingRaw);
-	const apiKey = input.apiKey && input.apiKey.trim().length > 0 ? input.apiKey.trim() : existing.apiKey;
+	const apiKey = input.clearApiKey
+		? undefined
+		: input.apiKey && input.apiKey.trim().length > 0
+			? input.apiKey.trim()
+			: existing.apiKey;
 	const entry: Record<string, unknown> =
 		existingRaw && typeof existingRaw === "object" ? { ...(existingRaw as Record<string, unknown>) } : {};
 	entry.baseUrl = input.baseUrl;
@@ -330,9 +468,8 @@ export function upsertModelsProvider(input: CustomProviderInput): void {
 	if (Object.keys(compat).length > 0) entry.compat = compat;
 	else delete entry.compat;
 	entry.models = input.models.map(m => mergeModel(entry.models, m));
-	if (!data.providers) data.providers = {};
-	data.providers[input.id] = entry;
-	writeFileSync(modelsPath(), stringify(data), "utf8");
+	data.doc.setIn(["providers", input.id], entry);
+	writeModelsFile(data.doc);
 }
 
 /** Delete a custom provider entry (built-ins cannot be removed here). */
@@ -340,10 +477,10 @@ export function deleteModelsProvider(id: string): void {
 	if (BUILTIN_PROVIDERS.has(id)) {
 		throw new Error(`"${id}" is a built-in provider and cannot be removed from the GUI.`);
 	}
-	const data = readFile();
-	if (!data.providers || !(id in data.providers)) return;
-	delete data.providers[id];
-	writeFileSync(modelsPath(), stringify(data), "utf8");
+	const data = readModelsFile();
+	if (!(id in data.providers)) return;
+	data.doc.deleteIn(["providers", id]);
+	writeModelsFile(data.doc);
 }
 
 /** Protocol options for the add-provider form (ApiSchema in models-config-schema). */

@@ -9,6 +9,7 @@ import { Check, Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SettingEntry, SettingProvenance } from "../../../shared/rpc-types";
 import { useLang, useT } from "../../lib/i18n";
+import { isImeKeyEvent } from "../../lib/ime";
 import {
 	applyThemeByName,
 	getPersistedThemeSelection,
@@ -241,6 +242,7 @@ function SchemaSettingRow({
 	}, [draft, baseDraft, entry.type, commit, t]);
 
 	const onTextKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+		if (isImeKeyEvent(event)) return;
 		if (event.key === "Enter") event.currentTarget.blur();
 		if (event.key === "Escape") {
 			setDraft(null);
@@ -568,6 +570,13 @@ function SchemaSettingRow({
 	return (
 		<div>
 			{renderControl()}
+			{entry.default === undefined && value !== undefined && (
+				<div className="px-2 pb-2">
+					<Button disabled={saving} onClick={() => void commit(undefined)} size="sm" variant="ghost">
+						{t("settings.restoreUnset")}
+					</Button>
+				</div>
+			)}
 			{error && (
 				<p role="alert" className="px-2 pb-2 text-omp-xs text-(--omp-error)">
 					{error}

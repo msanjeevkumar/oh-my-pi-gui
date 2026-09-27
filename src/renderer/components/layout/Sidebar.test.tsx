@@ -34,6 +34,7 @@ globals.requestAnimationFrame = (callback: () => void) => setTimeout(callback, 0
 interface TestElement {
 	textContent: string | null;
 	remove: () => void;
+	getAttribute: (name: string) => string | null;
 	querySelector: (selector: string) => TestElement | null;
 	querySelectorAll: (selector: string) => TestElement[];
 }
@@ -232,6 +233,7 @@ describe("Sidebar menus and pinned ordering", () => {
 		const navigation = container.querySelector("[data-sidebar-navigation]");
 		for (const label of [
 			"Commands",
+			"Start with what makes OMP different",
 			"Agent Hub",
 			"Providers & login",
 			"Usage & quotas",
@@ -243,6 +245,19 @@ describe("Sidebar menus and pinned ordering", () => {
 		]) {
 			expect(navigation?.textContent).toContain(label);
 		}
+		const capabilities = [...navigation!.querySelectorAll("button")].find(button =>
+			(button.textContent ?? "").includes("Start with what makes OMP different"),
+		);
+		if (!capabilities) throw new Error("Capabilities navigation item missing");
+		await fire(capabilities, "onClick");
+		expect(useUiStore.getState().settingsOpen).toBe(true);
+		expect(useUiStore.getState().settingsTab).toBe("capabilities");
+		const commandCenter = navigation?.querySelector('button[data-command-center-entry="true"]');
+		expect(commandCenter?.textContent).toContain("⌘K / ⌃K");
+		await act(async () => useUiStore.setState({ keymapOverrides: { palette: ["⌘⇧K"] } }));
+		expect(commandCenter?.textContent).toContain("⇧⌘K");
+		expect(commandCenter?.textContent).not.toContain("⌃K");
+		await act(async () => useUiStore.setState({ keymapOverrides: {} }));
 
 		const hotkeys = [...navigation!.querySelectorAll("button")].find(button =>
 			(button.textContent ?? "").includes("Keyboard shortcuts"),
@@ -252,6 +267,7 @@ describe("Sidebar menus and pinned ordering", () => {
 		expect(useUiStore.getState().hotkeysOpen).toBe(true);
 
 		const collapse = navigation!.querySelector('[aria-label="Collapse navigation"]');
+		expect(collapse?.getAttribute("title")).toBe("Collapse navigation");
 		await fire(collapse, "onClick");
 		expect((navigation!.querySelector(".omp-sidebar-group") as unknown as Element).getAttribute("aria-hidden")).toBe(
 			"true",
@@ -704,5 +720,86 @@ describe("Sidebar menus and pinned ordering", () => {
 		expect(actions).not.toBeNull();
 		expect(actions?.className).not.toMatch(/\bw-\d|\bwidth/);
 		expect(row?.querySelector("[data-overflow]")).toBeNull();
+	});
+
+	it("asks before removing a session transcript, and only deletes once confirmed", async () => {
+		const omp = installMockOmp(LIST);
+		seedStores();
+		await mount(<Sidebar />);
+
+		const row = [...document.querySelectorAll(".omp-sidebar-session-row")].find(el =>
+			(el.textContent ?? "").includes("Session /work/alpha/one"),
+		) as unknown as Element;
+		await fire(row.querySelector('[aria-label="Delete session"]') as Element, "onClick");
+
+		// Queued, not executed: the trash click must never reach the hard delete.
+		expect(omp.sessions.delete).not.toHaveBeenCalled();
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog?.textContent).toContain("/work/alpha/one");
+		expect(dialog?.textContent).toContain("cannot be undone");
+
+		const buttons = [...(dialog?.querySelectorAll("button") ?? [])];
+		await fire(buttons.find(b => (b.textContent ?? "").trim() === "Cancel") as unknown as Element, "onClick");
+		expect(omp.sessions.delete).not.toHaveBeenCalled();
+		expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+		await fire(row.querySelector('[aria-label="Delete session"]') as Element, "onClick");
+		const confirm = [...document.body.querySelectorAll('[role="dialog"] button')].find(
+			b => (b.textContent ?? "").trim() === "Delete",
+		) as unknown as Element;
+		await fire(confirm, "onClick");
+		expect(omp.sessions.delete).toHaveBeenCalledWith("/work/alpha/one.jsonl");
+	});
+
+	it("names the whole workspace and its session count before a group delete", async () => {
+		const omp = installMockOmp(LIST);
+		seedStores();
+		await mount(<Sidebar />);
+
+		const header = container.querySelector('[data-workspace-group="/work/alpha"]') as unknown as Element;
+		await fire(header, "onContextMenu");
+		const items = [...document.body.querySelectorAll('[role="menu"] button')];
+		await fire(items.find(b => (b.textContent ?? "").includes("Delete")) as unknown as Element, "onClick");
+
+		expect(omp.sessions.delete).not.toHaveBeenCalled();
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog?.textContent).toContain("alpha");
+		expect(dialog?.textContent).toContain("2");
+		expect(dialog?.textContent).toContain("permanently deletes the session files");
+
+		await fire(
+			[...document.body.querySelectorAll('[role="dialog"] button')].find(
+				b => (b.textContent ?? "").trim() === "Delete",
+			) as unknown as Element,
+			"onClick",
+		);
+		// Both alpha sessions, and nothing from the other workspace.
+		expect(omp.sessions.delete.mock.calls.map(call => call[0]).sort()).toEqual([
+			"/work/alpha/one.jsonl",
+			"/work/alpha/two.jsonl",
+		]);
+	});
+});
+
+describe("Sidebar session-list failures", () => {
+	it("names the failed read instead of claiming there are no sessions", async () => {
+		const omp = installMockOmp([]);
+		omp.sessions.list.mockRejectedValue(new Error("session index unreadable"));
+		seedStores();
+		await mount(<Sidebar />);
+
+		// A read that never answered is not a read that found nothing: the dashed
+		// "No code sessions yet" card is a false all-clear about the user's history.
+		const text = document.body.textContent ?? "";
+		expect(text).toContain("Could not load your sessions.");
+		expect(text).toContain("session index unreadable");
+		expect(text).not.toContain("No code sessions yet");
+
+		const callsBeforeRetry = omp.sessions.list.mock.calls.length;
+		const retry = [...document.body.querySelectorAll("button")].find(b => (b.textContent ?? "") === "Retry");
+		if (!retry) throw new Error("retry button not found");
+		await fire(retry as unknown as Element, "onClick");
+		await flush();
+		expect(omp.sessions.list.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
 	});
 });

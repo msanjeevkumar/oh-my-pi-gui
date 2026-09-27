@@ -16,6 +16,7 @@ const ok = (data?: unknown) => ({ type: "response" as const, command: "x", succe
 
 const baseCtx: CommandRegistryContext = {
 	t: translate,
+	tabKind: "agent",
 	isStreaming: false,
 	fastModeEnabled: false,
 	autoCompaction: false,
@@ -80,6 +81,7 @@ const lastToast = () => useToastStore.getState().toasts.at(-1);
 let rpc: Record<string, Mock>;
 let confirmMock: Mock;
 let dispatchMock: Mock;
+let sidecarRestart: Mock;
 let hydrateSession: Mock;
 let ctx: CommandRegistryContext;
 
@@ -92,8 +94,9 @@ beforeEach(() => {
 	};
 	confirmMock = vi.fn(() => true);
 	dispatchMock = vi.fn();
+	sidecarRestart = vi.fn(async () => {});
 	(globalThis as Record<string, unknown>).window = {
-		omp: { rpc },
+		omp: { rpc, sidecar: { restart: sidecarRestart } },
 		confirm: confirmMock,
 		dispatchEvent: dispatchMock,
 	};
@@ -227,5 +230,21 @@ describe("one-shot action wiring", () => {
 		if (affordance.kind !== "picker") throw new Error("expected picker");
 		affordance.open();
 		expect(useUiStore.getState().forceToolOpen).toBe(true);
+	});
+	it("restart forwards the active session origin to the sidecar", async () => {
+		useSessionStore.setState({ sessionFile: "/tmp/session.json" });
+		const affordance = wired("restart");
+		if (affordance.kind !== "action") throw new Error("expected action");
+		await affordance.run();
+		expect(sidecarRestart).toHaveBeenCalledWith({ tabId: undefined, sessionPath: "/tmp/session.json" });
+	});
+
+	it("restart is blocked while a turn is running", async () => {
+		useSessionStore.setState({ isStreaming: true });
+		const affordance = wired("restart");
+		if (affordance.kind !== "action") throw new Error("expected action");
+		await affordance.run();
+		expect(sidecarRestart).not.toHaveBeenCalled();
+		expect(lastToast()?.variant).toBe("warning");
 	});
 });

@@ -1,11 +1,15 @@
-import { CircleGauge, LoaderCircle } from "lucide-react";
+import { CircleGauge, LoaderCircle, RotateCw } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { RpcContextReportResult } from "../../../shared/rpc-types";
-import { formatTokens } from "../../lib/format";
+import { useOverlayPresence } from "../../hooks/use-overlay-presence";
+import { contextUsageView, formatContextUsage } from "../../lib/context-usage";
+import { cx, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { useTabRpc } from "../../lib/tab-rpc";
 import { useSessionStore } from "../../stores/session";
+import { useUiStore } from "../../stores/ui";
+import { Button } from "../common";
 
 interface AnchorPosition {
 	bottom?: number;
@@ -39,6 +43,7 @@ export function ContextUsagePopover() {
 	const contextUsage = useSessionStore(state => state.contextUsage);
 	const sessionId = useSessionStore(state => state.sessionId);
 	const sidecarReady = useSessionStore(state => state.status) === "ready";
+	const openContextReport = useUiStore(state => state.openContextReport);
 	const [open, setOpen] = useState(false);
 	const [pinned, setPinned] = useState(false);
 	const [anchor, setAnchor] = useState<AnchorPosition | null>(null);
@@ -49,6 +54,7 @@ export function ContextUsagePopover() {
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const popoverRef = useRef<HTMLDivElement>(null);
 	const closeTimer = useRef<number | undefined>(undefined);
+	const { mounted, closing } = useOverlayPresence(open);
 
 	const usageKey = contextUsage ? `${sessionId}:${contextUsage.tokens}:${contextUsage.contextWindow}` : "";
 
@@ -102,7 +108,11 @@ export function ContextUsagePopover() {
 			dismiss();
 		};
 		const onKeyDown = (event: globalThis.KeyboardEvent) => {
-			if (event.key === "Escape") dismiss();
+			if (event.key !== "Escape") return;
+			// Claim the keypress: the app-wide Escape handler runs next on window and
+			// would abort the active turn in the same keystroke that closed this popover.
+			event.preventDefault();
+			dismiss();
 		};
 		window.addEventListener("resize", onViewportChange);
 		window.addEventListener("scroll", onViewportChange, true);
@@ -116,6 +126,11 @@ export function ContextUsagePopover() {
 		};
 	}, [dismiss, open, updateAnchor]);
 
+	const [attempt, setAttempt] = useState(0);
+
+	/* The retry button's bump is the only reason this effect re-runs; nothing
+	   inside reads it. */
+	// biome-ignore lint/correctness/useExhaustiveDependencies: retry re-reads by bump
 	useEffect(() => {
 		if (!open || !sidecarReady || !usageKey || usageKey === loadedKey) return;
 		let cancelled = false;
@@ -141,13 +156,11 @@ export function ContextUsagePopover() {
 		return () => {
 			cancelled = true;
 		};
-	}, [loadedKey, open, sidecarReady, usageKey, rpc]);
+	}, [attempt, loadedKey, open, sidecarReady, usageKey, rpc]);
 
 	const breakdown = loadedKey === usageKey ? report?.breakdown : undefined;
-	const contextWindow = breakdown?.contextWindow || contextUsage?.contextWindow || 0;
-	const usedTokens = breakdown?.usedTokens ?? contextUsage?.tokens ?? 0;
-	const remainingTokens = Math.max(0, contextWindow - usedTokens);
-	const percent = contextWindow > 0 ? Math.min(100, (usedTokens / contextWindow) * 100) : (contextUsage?.percent ?? 0);
+	const view = contextUsageView(contextUsage, breakdown);
+	const { capacityKnown, contextWindow, percent, remainingTokens, usedTokens } = view;
 	const categories = useMemo<UsageCategory[]>(() => {
 		if (!breakdown) return [];
 		return [
@@ -162,14 +175,10 @@ export function ContextUsagePopover() {
 	}, [breakdown]);
 
 	if (!contextUsage) return null;
-	if (contextWindow <= 0) {
-		return (
-			<span className="flex items-center gap-1.5 px-1.5 text-(--omp-dim)" title={t("contextUsage.unavailable")}>
-				<CircleGauge aria-hidden="true" size={14} />
-				<span aria-label={t("contextUsage.unavailable")}>—</span>
-			</span>
-		);
-	}
+
+	const triggerLabel = capacityKnown
+		? t("contextUsage.open", { percent: Math.round(percent) })
+		: t("contextUsage.windowUnknown");
 
 	const popoverStyle: CSSProperties | undefined = anchor
 		? { bottom: anchor.bottom, left: anchor.left, top: anchor.top, width: anchor.width }
@@ -180,7 +189,7 @@ export function ContextUsagePopover() {
 			<button
 				aria-controls="omp-context-usage-popover"
 				aria-expanded={open}
-				aria-label={t("contextUsage.open", { percent: Math.round(percent) })}
+				aria-label={triggerLabel}
 				className={`omp-context-usage-trigger omp-pressable flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-1.5 ${
 					open
 						? "text-[var(--omp-link)] ring-1 ring-[var(--omp-link)]"
@@ -197,81 +206,102 @@ export function ContextUsagePopover() {
 				}}
 				onFocus={reveal}
 				ref={buttonRef}
-				title={t("input.contextTooltip", { percent: Math.round(percent) })}
+				title={
+					capacityKnown
+						? t("input.contextTooltip", { percent: Math.round(percent) })
+						: t("contextUsage.windowUnknown")
+				}
 				type="button"
 			>
 				<CircleGauge aria-hidden="true" size={14} strokeWidth={2} />
-				<span className="font-mono text-omp-xs tabular-nums">
-					{formatTokens(usedTokens)}/{formatTokens(contextWindow)}
-				</span>
+				<span className="font-mono text-omp-xs tabular-nums">{formatContextUsage(view)}</span>
 			</button>
 
-			{open &&
+			{mounted &&
 				anchor &&
 				createPortal(
 					<div
+						aria-hidden={closing || undefined}
 						aria-label={t("contextUsage.title")}
-						className="fixed z-[80] rounded-[18px] border border-[var(--omp-border)] bg-[var(--omp-bg-elevated)] p-4 shadow-[var(--omp-shadow-lg)]"
+						className={cx(
+							"fixed z-[80] rounded-[18px] border border-[var(--omp-border)] bg-[var(--omp-bg-elevated)] p-4 shadow-[var(--omp-shadow-lg)]",
+							closing ? "omp-scale-out pointer-events-none" : "omp-pop-in",
+						)}
 						id="omp-context-usage-popover"
+						inert={closing}
 						onMouseEnter={cancelScheduledClose}
 						onMouseLeave={scheduleClose}
 						ref={popoverRef}
-						role="dialog"
+						role="group"
 						style={popoverStyle}
 					>
 						<div className="flex items-baseline justify-between gap-4">
 							<span className="text-omp-lg text-[var(--omp-muted)]">
 								{t("contextUsage.used")}{" "}
-								<strong className="ml-1 font-semibold text-[var(--omp-text)]">{Math.round(percent)}%</strong>
+								{capacityKnown && (
+									<strong className="ml-1 font-semibold text-[var(--omp-text)]">{`${Math.round(percent)}%`}</strong>
+								)}
 							</span>
 							<span className="shrink-0 font-mono text-omp-lg font-semibold tabular-nums text-[var(--omp-text)]">
-								{approximateTokens(usedTokens)} / {formatTokens(contextWindow)}
+								{capacityKnown
+									? `${approximateTokens(usedTokens)} / ${formatTokens(contextWindow)}`
+									: approximateTokens(usedTokens)}
 							</span>
 						</div>
 
-						<div
-							aria-label={t("contextUsage.progress", { percent: Math.round(percent) })}
-							aria-valuemax={100}
-							aria-valuemin={0}
-							aria-valuenow={Math.round(percent)}
-							aria-valuetext={`${formatTokens(usedTokens)} ${t("contextUsage.used")}, ${formatTokens(remainingTokens)} ${t("contextUsage.remaining")}`}
-							className="mt-3 flex h-1.5 overflow-hidden rounded-full bg-[var(--omp-progress-bg)]"
-							role="progressbar"
-						>
-							{categories.length > 0 ? (
-								categories.map(category => (
+						{capacityKnown && (
+							<div
+								aria-label={t("contextUsage.progress", { percent: Math.round(percent) })}
+								aria-valuemax={100}
+								aria-valuemin={0}
+								aria-valuenow={Math.round(percent)}
+								aria-valuetext={`${formatTokens(usedTokens)} ${t("contextUsage.used")}, ${formatTokens(remainingTokens)} ${t("contextUsage.remaining")}`}
+								className="mt-3 flex h-1.5 overflow-hidden rounded-full bg-[var(--omp-progress-bg)]"
+								role="progressbar"
+							>
+								{categories.length > 0 ? (
+									categories.map(category => (
+										<span
+											aria-hidden="true"
+											key={category.key}
+											style={{
+												backgroundColor: category.color,
+												width: `${Math.min(100, (category.tokens / contextWindow) * 100)}%`,
+											}}
+										/>
+									))
+								) : (
 									<span
 										aria-hidden="true"
-										key={category.key}
-										style={{
-											backgroundColor: category.color,
-											width: `${Math.min(100, (category.tokens / Math.max(1, contextWindow)) * 100)}%`,
-										}}
+										className="bg-[var(--omp-status-context)]"
+										style={{ width: `${percent}%` }}
 									/>
-								))
-							) : (
-								<span
-									aria-hidden="true"
-									className="bg-[var(--omp-status-context)]"
-									style={{ width: `${percent}%` }}
-								/>
-							)}
-						</div>
+								)}
+							</div>
+						)}
 
-						<div className="mt-3 grid grid-cols-2 gap-2">
-							<div className="rounded-lg border border-[var(--omp-border-muted)] px-2.5 py-2">
-								<span className="block text-omp-xs text-[var(--omp-dim)]">{t("contextUsage.used")}</span>
-								<span className="font-mono text-omp-lg font-semibold tabular-nums text-[var(--omp-text)]">
-									{formatTokens(usedTokens)}
-								</span>
+						{capacityKnown ? (
+							<div className="mt-3 grid grid-cols-2 gap-2">
+								<div className="rounded-lg border border-[var(--omp-border-muted)] px-2.5 py-2">
+									<span className="block text-omp-xs text-[var(--omp-dim)]">{t("contextUsage.used")}</span>
+									<span className="font-mono text-omp-lg font-semibold tabular-nums text-[var(--omp-text)]">
+										{formatTokens(usedTokens)}
+									</span>
+								</div>
+								<div className="rounded-lg border border-[var(--omp-border-muted)] px-2.5 py-2">
+									<span className="block text-omp-xs text-[var(--omp-dim)]">
+										{t("contextUsage.remaining")}
+									</span>
+									<span className="font-mono text-omp-lg font-semibold tabular-nums text-[var(--omp-text)]">
+										{formatTokens(remainingTokens)}
+									</span>
+								</div>
 							</div>
-							<div className="rounded-lg border border-[var(--omp-border-muted)] px-2.5 py-2">
-								<span className="block text-omp-xs text-[var(--omp-dim)]">{t("contextUsage.remaining")}</span>
-								<span className="font-mono text-omp-lg font-semibold tabular-nums text-[var(--omp-text)]">
-									{formatTokens(remainingTokens)}
-								</span>
+						) : (
+							<div className="mt-3 rounded-lg border border-[var(--omp-border-muted)] px-2.5 py-2 text-omp-md text-[var(--omp-dim)]">
+								{t("contextUsage.windowUnknown")}
 							</div>
-						</div>
+						)}
 
 						{loading && categories.length === 0 ? (
 							<div className="flex items-center gap-2 py-5 text-omp-md text-[var(--omp-dim)]">
@@ -279,7 +309,19 @@ export function ContextUsagePopover() {
 								{t("contextUsage.loading")}
 							</div>
 						) : error && categories.length === 0 ? (
-							<div className="py-4 text-omp-md text-[var(--omp-dim)]">{t("contextUsage.unavailable")}</div>
+							<div className="flex flex-col items-start gap-2 py-4">
+								<p role="alert" className="text-omp-md text-[var(--omp-dim)]">
+									{t("contextUsage.unavailable")}
+								</p>
+								<Button
+									icon={<RotateCw size={12} />}
+									onClick={() => setAttempt(count => count + 1)}
+									size="sm"
+									variant="secondary"
+								>
+									{t("common.retry")}
+								</Button>
+							</div>
 						) : (
 							<div className="mt-3 space-y-2.5">
 								{categories.map(category => (
@@ -299,6 +341,17 @@ export function ContextUsagePopover() {
 								))}
 							</div>
 						)}
+						<Button
+							className="mt-3 w-full"
+							onClick={() => {
+								dismiss();
+								openContextReport();
+							}}
+							size="sm"
+							variant="ghost"
+						>
+							{t("contextUsage.fullReport")}
+						</Button>
 					</div>,
 					document.body,
 				)}

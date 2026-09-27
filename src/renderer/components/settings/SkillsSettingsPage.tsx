@@ -1,4 +1,15 @@
-import { BookOpen, Check, ChevronRight, FileText, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import {
+	AlertTriangle,
+	BookOpen,
+	Check,
+	ChevronRight,
+	FileText,
+	Pencil,
+	Plus,
+	RefreshCw,
+	Trash2,
+	X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RpcSkillDetail, RpcSkillInfo, RpcSkillsResult } from "../../../shared/rpc-types";
 import { useActiveTabRouteReady } from "../../hooks/use-active-tab-route";
@@ -102,6 +113,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 	const [detailLoading, setDetailLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [detailError, setDetailError] = useState<string | null>(null);
+	const [detailAttempt, setDetailAttempt] = useState(0);
 	const [busyName, setBusyName] = useState<string | null>(null);
 	const [editor, setEditor] = useState<EditorState | null>(null);
 	const [deleteArmed, setDeleteArmed] = useState(false);
@@ -110,7 +122,12 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 
 	const loadSkills = useCallback(
 		async (preferredName?: string | null) => {
-			if (!sidecarReady || !routeReady) return;
+			if (!sidecarReady) {
+				setError(t("common.notConnected"));
+				setLoading(false);
+				return;
+			}
+			if (!routeReady) return;
 			const request = ++listRequest.current;
 			setLoading(true);
 			setError(null);
@@ -132,7 +149,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 				if (request === listRequest.current) setLoading(false);
 			}
 		},
-		[routeReady, sidecarReady, tabRpc.getSkills],
+		[routeReady, sidecarReady, t, tabRpc.getSkills],
 	);
 
 	useEffect(() => {
@@ -148,11 +165,18 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 		if (sidecarReady && routeReady) void loadSkills();
 	}, [loadSkills, routeKey, routeReady, sidecarReady]);
 
+	/* `detailAttempt` is never read inside: it is the retry button's bump that re-runs
+	   this same detail read, which has no loader of its own to call. */
+	// biome-ignore lint/correctness/useExhaustiveDependencies: retry is a dependency by bump
 	useEffect(() => {
 		setDeleteArmed(false);
 		setDetail(null);
 		setDetailError(null);
-		if (!selectedName || !sidecarReady || !routeReady) return;
+		if (!selectedName || !routeReady) return;
+		if (!sidecarReady) {
+			setDetailError(t("common.notConnected"));
+			return;
+		}
 		// `startCreate` clears the selection before opening the editor. Clearing
 		// the editor before this guard immediately erased that freshly opened
 		// form, making the primary New skill action appear inert.
@@ -175,14 +199,14 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 			.finally(() => {
 				if (request === detailRequest.current && requestRoute === routeRef.current) setDetailLoading(false);
 			});
-	}, [routeKey, routeReady, selectedName, sidecarReady, tabRpc.getSkillDetail]);
+	}, [detailAttempt, routeKey, routeReady, selectedName, sidecarReady, t, tabRpc.getSkillDetail]);
 
 	const visible = useMemo(() => filterSkills(skills, query, filter), [filter, query, skills]);
 	const selected = skills.find(skill => skill.name === selectedName) ?? null;
 	const filterOptions: SkillFilter[] = ["all", "enabled", "disabled", "managed", "project", "user"];
 
 	const toggle = async (skill: RpcSkillInfo) => {
-		if (busyName) return;
+		if (!sidecarReady || busyName) return;
 		const mutationRoute = routeKey;
 		const enabled = !skill.enabled;
 		setBusyName(skill.name);
@@ -204,7 +228,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 	};
 
 	const save = async () => {
-		if (!editor || busyName) return;
+		if (!sidecarReady || !editor || busyName) return;
 		const mutationRoute = routeKey;
 		setBusyName(editor.name || "new");
 		try {
@@ -228,7 +252,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 	};
 
 	const remove = async () => {
-		if (!selected?.managed || busyName) return;
+		if (!sidecarReady || !selected?.managed || busyName) return;
 		const mutationRoute = routeKey;
 		setBusyName(selected.name);
 		try {
@@ -305,8 +329,9 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 				<button
 					aria-label={t("settings.skills.refresh")}
 					className="rounded-md p-1.5 text-(--omp-dim) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text) disabled:opacity-40"
-					disabled={loading || !routeReady}
+					disabled={!sidecarReady || loading || !routeReady}
 					onClick={() => void loadSkills()}
+					title={!sidecarReady ? t("common.notConnected") : undefined}
 					type="button"
 				>
 					<RefreshCw className={loading ? "animate-spin" : ""} size={13} />
@@ -315,16 +340,23 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 
 			<div className="skills-master-detail overflow-hidden rounded-lg border border-(--omp-border-muted)">
 				<aside className="skills-list-pane min-h-0">
-					{loading && skills.length === 0 ? (
-						<div className="flex h-full items-center justify-center">
-							<Spinner size="sm" />
-						</div>
-					) : error ? (
+					{/* A failed read outranks the empty list: an outage must not read as "no skills installed". */}
+					{error ? (
 						<div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
-							<p className="text-omp-sm text-(--omp-error)">{error}</p>
-							<Button onClick={() => void loadSkills()} size="sm">
+							<AlertTriangle className="text-(--omp-warning)" size={20} />
+							<p className="text-omp-sm text-(--omp-muted)">{error}</p>
+							<Button
+								disabled={!sidecarReady}
+								onClick={() => void loadSkills()}
+								size="sm"
+								title={!sidecarReady ? t("common.notConnected") : undefined}
+							>
 								{t("common.retry")}
 							</Button>
+						</div>
+					) : loading && skills.length === 0 ? (
+						<div className="flex h-full items-center justify-center">
+							<Spinner size="sm" />
 						</div>
 					) : visible.length === 0 ? (
 						<div className="flex h-full items-center justify-center px-5 text-center text-omp-sm text-(--omp-dim)">
@@ -365,7 +397,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 										</span>
 										<Toggle
 											checked={skill.enabled}
-											disabled={busyName !== null}
+											disabled={!sidecarReady || busyName !== null}
 											label={`${skill.name}: ${skill.enabled ? t("settings.skills.enabled") : t("settings.skills.disabled")}`}
 											onChange={() => void toggle(skill)}
 										/>
@@ -436,10 +468,13 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 									{t("common.cancel")}
 								</Button>
 								<Button
-									disabled={!editor.name.trim() || !editor.description.trim() || !editor.body.trim()}
+									disabled={
+										!sidecarReady || !editor.name.trim() || !editor.description.trim() || !editor.body.trim()
+									}
 									loading={busyName !== null}
 									onClick={() => void save()}
 									size="sm"
+									title={!sidecarReady ? t("common.notConnected") : undefined}
 									variant="primary"
 								>
 									{t("common.save")}
@@ -470,8 +505,9 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 										<button
 											aria-label={t("common.edit")}
 											className="rounded-md p-1.5 text-(--omp-dim) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
-											disabled={!detail}
+											disabled={!sidecarReady || !detail}
 											onClick={startEdit}
+											title={!sidecarReady ? t("common.notConnected") : undefined}
 											type="button"
 										>
 											<Pencil size={13} />
@@ -479,7 +515,9 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 										<button
 											aria-label={t("common.delete")}
 											className="rounded-md p-1.5 text-(--omp-dim) hover:bg-(--omp-error-dim) hover:text-(--omp-error)"
+											disabled={!sidecarReady}
 											onClick={() => setDeleteArmed(true)}
+											title={!sidecarReady ? t("common.notConnected") : undefined}
 											type="button"
 										>
 											<Trash2 size={13} />
@@ -496,7 +534,14 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 									<Button onClick={() => setDeleteArmed(false)} size="sm">
 										{t("common.cancel")}
 									</Button>
-									<Button loading={busyName !== null} onClick={() => void remove()} size="sm" variant="danger">
+									<Button
+										disabled={!sidecarReady}
+										loading={busyName !== null}
+										onClick={() => void remove()}
+										size="sm"
+										title={!sidecarReady ? t("common.notConnected") : undefined}
+										variant="danger"
+									>
 										{t("common.delete")}
 									</Button>
 								</div>
@@ -527,9 +572,21 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 										<Spinner size="sm" />
 									</div>
 								) : detailError ? (
-									<p className="rounded-lg border border-[color-mix(in_srgb,var(--omp-error)_35%,transparent)] bg-transparent px-3 py-2 text-omp-sm text-(--omp-error)">
-										{detailError}
-									</p>
+									<div className="flex flex-col items-start gap-2">
+										<p className="rounded-lg border border-[color-mix(in_srgb,var(--omp-error)_35%,transparent)] bg-transparent px-3 py-2 text-omp-sm text-(--omp-error)">
+											{detailError}
+										</p>
+										<Button
+											disabled={!sidecarReady}
+											icon={<RefreshCw size={12} />}
+											onClick={() => setDetailAttempt(attempt => attempt + 1)}
+											size="sm"
+											title={!sidecarReady ? t("common.notConnected") : undefined}
+											variant="secondary"
+										>
+											{t("common.retry")}
+										</Button>
+									</div>
 								) : detail ? (
 									<div className="skills-preview-pane min-h-0 flex-1 overflow-y-auto border-t border-(--omp-border-muted) pt-3 text-omp-md">
 										<MarkdownRenderer content={detail.body} />

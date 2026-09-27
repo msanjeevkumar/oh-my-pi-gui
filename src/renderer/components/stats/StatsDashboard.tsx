@@ -58,6 +58,14 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 				// The stats:fetch bridge RESOLVES failures as {error, unavailable:true}
 				// instead of rejecting — surface that shape as the failure it is.
 				if (result != null && ("unavailable" in result || result.error)) {
+					// Server still booting: the routes show a loading state and recover on
+					// their own, so the quiet auto-sync on open must not alarm the user.
+					if (result.unavailable) {
+						if (!opts?.quiet) {
+							toast({ variant: "warning", title: t("stats.syncFailed"), message: t("stats.starting") });
+						}
+						return;
+					}
 					toast({
 						variant: "error",
 						title: t("stats.syncFailed"),
@@ -158,7 +166,7 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 						</Button>
 					</div>
 				</div>
-				<div key={route} className="min-h-0 flex-1 overflow-y-auto p-4">
+				<div key={`${route}:${refreshKey}`} className="min-h-0 flex-1 overflow-y-auto p-4">
 					<p className="mb-3 text-omp-xs text-(--omp-dim)">{t("stats.scope", { range })}</p>
 					{route === "overview" && <OverviewRoute range={range} refreshKey={refreshKey} />}
 					{route === "models" && <ModelsRoute range={range} refreshKey={refreshKey} />}
@@ -169,9 +177,7 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 					{route === "behavior" && <BehaviorRoute range={range} refreshKey={refreshKey} />}
 					{route === "gain" && <GainRoute range={range} refreshKey={refreshKey} />}
 					{route === "projects" && <ProjectsRoute range={range} refreshKey={refreshKey} />}
-					{route === "requests" && (
-						<RequestsRoute key={`${range}:${refreshKey}`} range={range} refreshKey={refreshKey} />
-					)}
+					{route === "requests" && <RequestsRoute range={range} refreshKey={refreshKey} />}
 				</div>
 			</div>
 		</Modal>

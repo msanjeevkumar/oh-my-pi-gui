@@ -30,6 +30,7 @@ import type {
 	RpcSshHostInput,
 	SessionInfoUpdateFrame,
 	SidecarStatus,
+	SidecarStatusPayload,
 	SubagentFrame,
 	ThinkingLevel,
 	TodoPhase,
@@ -98,6 +99,8 @@ export const IPC_COMMANDS = {
 	/** Absolute path to the main-process crash log */
 	RUNTIME_LOG_PATH: "runtime:log-path",
 	LOG_SNAPSHOT: "log:snapshot",
+	/** Quit the app through the main-process guard, which confirms while sessions work. */
+	APP_QUIT: "app:quit",
 	/** Send an RPC command, get response */
 	RPC_COMMAND: "rpc:command",
 	/** Send an RPC command to a specific tab's sidecar (IpcRpcCommandForTabPayload). */
@@ -250,11 +253,35 @@ export type MenuAction =
 	| "new-session"
 	| "new-tab"
 	| "new-chat-tab"
+	| "close-tab"
 	| "open-project"
 	| "toggle-sidebar"
 	| "toggle-panel"
 	| "open-settings"
 	| "open-usage"
+	| "open-command-center"
+	| "open-context-report"
+	| "open-jobs"
+	| "open-stats"
+	| "open-hotkeys"
+	| "open-session-info"
+	| "open-share-session"
+	| "open-import"
+	| "open-branch-picker"
+	| "open-session-tree"
+	| "open-capabilities"
+	| "open-model-picker"
+	| "open-git"
+	| "restart-sidecar"
+	| "open-workspace-dirs"
+	| "open-agent-hub"
+	| "open-modes"
+	| "open-providers"
+	| "open-model-roles"
+	| "open-extensions"
+	| "open-inventory"
+	| "open-pr-center"
+	| "open-debug"
 	| "export-html"
 	| "handoff"
 	| "toggle-fast"
@@ -364,11 +391,8 @@ export interface IpcEventsBatchPayload {
 	events: AgentSessionEvent[];
 }
 
-export interface IpcSidecarStatusPayload {
-	status: "starting" | "ready" | "exited" | "error" | "restarting";
-	message?: string;
-	cwd: string;
-}
+/** The sidecar's `status` event forwarded verbatim (the pool re-stamps `cwd`). */
+export type IpcSidecarStatusPayload = SidecarStatusPayload;
 
 export interface IpcExtensionUiPayload {
 	tabId: string;
@@ -490,6 +514,9 @@ export interface CustomProviderInput {
 	api: CustomProviderApi;
 	baseUrl: string;
 	apiKey?: string;
+	/** Erase the stored key. Blank `apiKey` alone cannot mean "delete": the field
+	 * is masked, so an untouched edit submits empty and must keep the secret. */
+	clearApiKey?: boolean;
 	auth?: "apiKey" | "none" | "oauth";
 	/** Send the key in an Authorization header instead of the provider default. */
 	authHeader?: boolean;
@@ -839,6 +866,14 @@ export interface OmpApi {
 		report(error: RuntimeErrorReport): void;
 		logPath(): Promise<string>;
 		logSnapshot(): Promise<LogBatch>;
+	};
+	app: {
+		/**
+		 * Quit the whole app through the main-process guard, which confirms while
+		 * any session is still working. `window.close()` is NOT a quit: it only
+		 * shuts the focused window and leaves the rest of the session behind.
+		 */
+		quit(): void;
 	};
 	rpc: {
 		command(cmd: RpcCommand, timeoutMs?: number): Promise<RpcResponse>;

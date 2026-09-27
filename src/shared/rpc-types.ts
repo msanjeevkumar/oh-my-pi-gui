@@ -996,6 +996,14 @@ export interface ContextUsage {
 	percent: number;
 }
 
+/** Per-million-token rate card, as carried by the catalog model on the wire. */
+export interface ModelCost {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+}
+
 export interface ModelInfo {
 	provider: string;
 	id: string;
@@ -1009,6 +1017,9 @@ export interface ModelInfo {
 	/** Present on the wire (get_available_models / get_state carry full Model
 	 * objects) — used by the picker to flag over-context switches. */
 	contextWindow?: number | null;
+	/** Below the catalog these are reported only for models with a rate card. */
+	maxTokens?: number | null;
+	cost?: ModelCost;
 }
 
 export interface RpcSessionState {
@@ -1712,13 +1723,19 @@ export interface PlanModeState {
 // Model Roles
 // ============================================================================
 
-export interface ModelRoleEntry {
+export interface ModelRoleCandidate {
+	provider: string;
 	id: string;
 	name: string;
-	tag: string;
-	color: string;
+	kind: "chat" | "tiny" | "image" | "tts" | "stt" | "search" | "judge";
+}
+
+export interface ModelRoleEntry extends ModelRoleMetadata {
+	/** Configured selector, not necessarily a catalog model id. */
 	model?: string;
 	source: string;
+	/** Backend-filtered eligible models; never shared with the chat picker. */
+	candidates: ModelRoleCandidate[];
 }
 
 export interface ModelRolesResult {
@@ -1728,9 +1745,10 @@ export interface ModelRolesResult {
 export interface ModelRoleMetadata {
 	id: string;
 	name: string;
-	tag: string;
-	color: string;
+	tag?: string;
+	color?: string;
 	hidden?: boolean;
+	section: "chat" | "kind";
 }
 
 export interface ModelRoleMetadataResult {
@@ -1963,4 +1981,28 @@ export type AssistantMessageEvent =
 // Sidecar Status
 // ============================================================================
 
-export type SidecarStatus = "starting" | "ready" | "exited" | "error" | "restarting";
+/**
+ * `asleep` is the state of a sidecar that was created but never spawned — a
+ * restored background tab, whose process is started the first time the tab
+ * becomes visible. It is distinct from `exited` (a spawn that ran and ended)
+ * and from `starting` (a spawn already under way).
+ */
+export type SidecarStatus = "asleep" | "starting" | "ready" | "exited" | "error" | "restarting";
+
+/** Crash-loop progress carried by a `restarting` status, and by the terminal
+ * `error` when the attempts ran out. Structured so the banner can render
+ * "attempt N/M" without parsing main's diagnostic text. */
+export interface SidecarRestartProgress {
+	attempt: number;
+	maxAttempts: number;
+}
+
+/** Payload of `SidecarManager`'s `status` event, forwarded to the renderer as
+ * the `SIDECAR_STATUS` IPC. `message` is the raw technical reason (exit code +
+ * stderr tail), never user-facing copy. */
+export interface SidecarStatusPayload {
+	status: SidecarStatus;
+	message?: string;
+	cwd: string;
+	restart?: SidecarRestartProgress;
+}

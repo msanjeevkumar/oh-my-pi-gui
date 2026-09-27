@@ -5,13 +5,15 @@ import { useTabRpc } from "../../lib/tab-rpc";
  * rpc.branch(entryId). Follows the ModelPicker overlay pattern.
  */
 
-import { GitBranch, Search } from "lucide-react";
+import { GitBranch, RotateCw, Search } from "lucide-react";
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useT } from "../../lib/i18n";
+import { isImeKeyEvent } from "../../lib/ime";
 import { branchSessionFromEntry } from "../../lib/messages";
+import { useSessionStore } from "../../stores/session";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
-import { Modal, Spinner } from "../common";
+import { Button, Modal, Spinner } from "../common";
 
 interface BranchEntry {
 	entryId: string;
@@ -23,6 +25,7 @@ export function BranchPickerDialog() {
 	const t = useT();
 	const open = useUiStore(state => state.branchPickerOpen);
 	const close = useUiStore(state => state.closeBranchPicker);
+	const sidecarReady = useSessionStore(state => state.status) === "ready";
 
 	const [query, setQuery] = useState("");
 	const [entries, setEntries] = useState<BranchEntry[]>([]);
@@ -34,12 +37,22 @@ export function BranchPickerDialog() {
 	const listRef = useRef<HTMLDivElement>(null);
 	const listboxId = useId();
 
+	const [attempt, setAttempt] = useState(0);
+
+	/* The retry button's bump is the only reason this effect re-runs; nothing inside
+	   reads it. */
+	// biome-ignore lint/correctness/useExhaustiveDependencies: retry re-reads by bump
 	useEffect(() => {
 		if (!open) return;
 		setQuery("");
 		setLoading(true);
 		setError(null);
 		setBranching(null);
+		if (!sidecarReady) {
+			setError(t("modelPicker.notConnected"));
+			setLoading(false);
+			return;
+		}
 		setActiveIndex(0);
 		requestAnimationFrame(() => inputRef.current?.focus());
 		let cancelled = false;
@@ -63,7 +76,7 @@ export function BranchPickerDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, tabRpc.getBranchMessages]);
+	}, [attempt, open, sidecarReady, t, tabRpc.getBranchMessages]);
 
 	// Newest first — the RPC returns entries in session order.
 	const filtered = useMemo(() => {
@@ -82,7 +95,7 @@ export function BranchPickerDialog() {
 	}, [activeIndex]);
 
 	const select = async (entry: BranchEntry) => {
-		if (branching !== null) return;
+		if (!sidecarReady || branching !== null) return;
 		setBranching(entry.entryId);
 		try {
 			const result = await branchSessionFromEntry(entry.entryId);
@@ -99,6 +112,7 @@ export function BranchPickerDialog() {
 	};
 
 	const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+		if (isImeKeyEvent(event)) return;
 		switch (event.key) {
 			case "ArrowDown":
 				event.preventDefault();
@@ -164,7 +178,21 @@ export function BranchPickerDialog() {
 					role={showOptions ? "listbox" : undefined}
 				>
 					{error ? (
-						<div className="py-10 text-center text-xs text-[var(--omp-error)]">{error}</div>
+						<div className="flex flex-col items-center gap-2 py-10 text-center">
+							<p role="alert" className="text-xs text-[var(--omp-error)]">
+								{error}
+							</p>
+							<Button
+								icon={<RotateCw size={12} />}
+								disabled={!sidecarReady}
+								onClick={() => setAttempt(count => count + 1)}
+								size="sm"
+								title={!sidecarReady ? t("modelPicker.notConnected") : undefined}
+								variant="secondary"
+							>
+								{t("common.retry")}
+							</Button>
+						</div>
 					) : loading ? (
 						<div className="flex items-center justify-center gap-2 py-10">
 							<Spinner size="sm" />
@@ -184,7 +212,8 @@ export function BranchPickerDialog() {
 										isActive ? "bg-(--omp-selected-bg)" : "hover:bg-(--omp-bg-tertiary)"
 									}`}
 									data-option-index={index}
-									disabled={branching !== null}
+									disabled={branching !== null || !sidecarReady}
+									title={!sidecarReady ? t("modelPicker.notConnected") : undefined}
 									id={`${listboxId}-option-${index}`}
 									key={entry.entryId}
 									onClick={() => void select(entry)}

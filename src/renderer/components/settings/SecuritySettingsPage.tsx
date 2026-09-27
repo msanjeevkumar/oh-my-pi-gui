@@ -9,8 +9,8 @@ import type {
 } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
 import { useTabRpc } from "../../lib/tab-rpc";
-import { useUiStore } from "../../stores/ui";
-import { Button, Input, Spinner } from "../common";
+import { useSessionStore } from "../../stores/session";
+import { Button, ConfirmDialog, Input, Spinner } from "../common";
 
 const ACTIVE_PHASES = new Set(["queued", "preparing", "reviewing", "publishing"]);
 const SEVERITIES = ["critical", "high", "medium", "low", "informational"] as const;
@@ -57,7 +57,7 @@ function errorMessage(error: unknown): string {
 export function SecuritySettingsPage() {
 	const tabRpc = useTabRpc();
 	const t = useT();
-	const closeSettings = useUiStore(state => state.closeSettings);
+	const sidecarReady = useSessionStore(state => state.status) === "ready";
 	const [dashboard, setDashboard] = useState<RpcSecurityDashboardResult>();
 	const [selectedScan, setSelectedScan] = useState<RpcSecurityScanResult>();
 	const [selectedFindingId, setSelectedFindingId] = useState<string>();
@@ -71,6 +71,7 @@ export function SecuritySettingsPage() {
 	const [rationale, setRationale] = useState("");
 	const [savingDisposition, setSavingDisposition] = useState(false);
 	const [validating, setValidating] = useState(false);
+	const [pendingScan, setPendingScan] = useState(false);
 	const generation = useRef(0);
 	const loadInFlightRef = useRef<Promise<void> | undefined>(undefined);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Changing the task client invalidates the previous task's responses.
@@ -87,6 +88,12 @@ export function SecuritySettingsPage() {
 
 	const load = useCallback(
 		(silent = false): Promise<void> => {
+			if (!sidecarReady) {
+				setDashboard(undefined);
+				setError(t("common.notConnected"));
+				setLoading(false);
+				return Promise.resolve();
+			}
 			const version = generation.current;
 			const inFlight = loadInFlightRef.current;
 			if (inFlight) return inFlight;
@@ -117,7 +124,7 @@ export function SecuritySettingsPage() {
 			});
 			return request;
 		},
-		[tabRpc.getSecurityDashboard],
+		[sidecarReady, t, tabRpc.getSecurityDashboard],
 	);
 	const refresh = useCallback(async (): Promise<void> => {
 		const inFlight = loadInFlightRef.current;
@@ -160,6 +167,17 @@ export function SecuritySettingsPage() {
 						: "incomplete";
 	const counts = useMemo(() => severityCounts(findings), [findings]);
 	const selectedFinding = findings.find(finding => finding.id === selectedFindingId);
+	const scanDisabledReason = !sidecarReady
+		? t("common.notConnected")
+		: running
+			? t("security.scanDisabled.running")
+			: activeOperation
+				? t("security.scanDisabled.running")
+				: !dashboard?.repositoryRoot
+					? t("security.scanDisabled.repository")
+					: !dashboard.modelReady
+						? t("security.scanDisabled.model")
+						: undefined;
 	useEffect(() => {
 		if (!selectedFinding) return;
 		setDisposition(selectedFinding.disposition);
@@ -167,6 +185,8 @@ export function SecuritySettingsPage() {
 	}, [selectedFinding]);
 
 	const runScan = async () => {
+		if (!sidecarReady) return;
+		setPendingScan(false);
 		setRunning(true);
 		setError(undefined);
 		try {
@@ -189,7 +209,22 @@ export function SecuritySettingsPage() {
 		}
 	};
 
+	/**
+	 * The feature master switch used to flip as a side effect of a button labelled
+	 * "Scan". Turning security on is its own decision — it enables scan planning
+	 * and execution beyond this one run — so it is confirmed first.
+	 */
+	const requestScan = () => {
+		if (!sidecarReady) return;
+		if (dashboard?.enabled) {
+			void runScan();
+			return;
+		}
+		setPendingScan(true);
+	};
+
 	const pickScan = async (scanId: string) => {
+		if (!sidecarReady) return;
 		const response = await tabRpc.getSecurityScan(scanId);
 		if (!response.success) {
 			setError(response.error);
@@ -200,7 +235,7 @@ export function SecuritySettingsPage() {
 	};
 
 	const saveDisposition = async () => {
-		if (!selectedFinding) return;
+		if (!sidecarReady || !selectedFinding) return;
 		setSavingDisposition(true);
 		try {
 			const response = await tabRpc.securitySetDisposition(
@@ -226,7 +261,7 @@ export function SecuritySettingsPage() {
 	};
 
 	const validateFinding = async () => {
-		if (!selectedFinding) return;
+		if (!sidecarReady || !selectedFinding) return;
 		setValidating(true);
 		setError(undefined);
 		try {
@@ -235,7 +270,9 @@ export function SecuritySettingsPage() {
 				setError(response.error);
 				return;
 			}
-			closeSettings();
+			// The user asked to re-check one finding, not to leave Settings: the
+			// dashboard read back is what reports the new verdict.
+			await refresh();
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {
@@ -244,7 +281,7 @@ export function SecuritySettingsPage() {
 	};
 
 	const cancelOperation = async () => {
-		if (!activeOperationId) return;
+		if (!sidecarReady || !activeOperationId) return;
 		try {
 			const response = await tabRpc.securityCancel(activeOperationId);
 			if (!response.success) setError(response.error);
@@ -266,7 +303,13 @@ export function SecuritySettingsPage() {
 			<div role="alert" className="flex flex-col items-start gap-3 py-8">
 				<h2 className="text-omp-lg font-semibold text-(--omp-text)">{t("security.empty.unavailable")}</h2>
 				<p className="text-omp-sm text-(--omp-muted)">{error}</p>
-				<Button onClick={() => void load()}>{t("common.retry")}</Button>
+				<Button
+					disabled={!sidecarReady}
+					onClick={() => void load()}
+					title={!sidecarReady ? t("common.notConnected") : undefined}
+				>
+					{t("common.retry")}
+				</Button>
 			</div>
 		);
 	}
@@ -318,13 +361,19 @@ export function SecuritySettingsPage() {
 					<Button
 						icon={<Play size={12} />}
 						loading={running}
-						disabled={!dashboard?.repositoryRoot || !dashboard.modelReady || !!activeOperation}
-						onClick={() => void runScan()}
+						disabled={!sidecarReady || !dashboard?.repositoryRoot || !dashboard.modelReady || !!activeOperation}
+						onClick={requestScan}
 						size="sm"
+						title={scanDisabledReason}
 						variant="primary"
 					>
 						{t(`security.scan.${targetLabel(target)}`)}
 					</Button>
+					{scanDisabledReason && (
+						<span className="max-w-52 text-omp-xs text-(--omp-dim)" role="status">
+							{scanDisabledReason}
+						</span>
+					)}
 					<div className="relative ml-1">
 						<ChevronDown
 							className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-(--omp-muted)"
@@ -493,8 +542,10 @@ export function SecuritySettingsPage() {
 							{dashboard?.scans.slice(0, 5).map(scan => (
 								<button
 									className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-(--omp-bg-tertiary)"
+									disabled={!sidecarReady}
 									key={scan.id}
 									onClick={() => void pickScan(scan.id)}
+									title={!sidecarReady ? t("common.notConnected") : undefined}
 									type="button"
 								>
 									<span
@@ -520,7 +571,14 @@ export function SecuritySettingsPage() {
 							<div className="flex items-center gap-2 text-omp-xs text-(--omp-warning)">
 								<Spinner size="sm" /> {t(`security.phase.${activeOperation.phase}`)}
 							</div>
-							<Button className="mt-2" onClick={() => void cancelOperation()} size="sm" variant="ghost">
+							<Button
+								className="mt-2"
+								disabled={!sidecarReady}
+								onClick={() => void cancelOperation()}
+								size="sm"
+								title={!sidecarReady ? t("common.notConnected") : undefined}
+								variant="ghost"
+							>
 								{t("security.cancel")}
 							</Button>
 						</div>
@@ -577,14 +635,21 @@ export function SecuritySettingsPage() {
 							/>
 						)}
 						<div className="mt-2 flex justify-end gap-2">
-							<Button loading={validating} onClick={() => void validateFinding()} size="sm">
+							<Button
+								disabled={!sidecarReady}
+								loading={validating}
+								onClick={() => void validateFinding()}
+								size="sm"
+								title={!sidecarReady ? t("common.notConnected") : undefined}
+							>
 								{t("security.validate")}
 							</Button>
 							<Button
-								disabled={disposition !== "open" && rationale.trim() === ""}
+								disabled={!sidecarReady || (disposition !== "open" && rationale.trim() === "")}
 								loading={savingDisposition}
 								onClick={() => void saveDisposition()}
 								size="sm"
+								title={!sidecarReady ? t("common.notConnected") : undefined}
 								variant="primary"
 							>
 								{t("security.saveDisposition")}
@@ -593,6 +658,17 @@ export function SecuritySettingsPage() {
 					</div>
 				</section>
 			)}
+
+			<ConfirmDialog
+				busy={running}
+				confirmLabel={t("security.enableScanAction")}
+				message={t("security.enableScanBody")}
+				onCancel={() => setPendingScan(false)}
+				onConfirm={() => void runScan()}
+				open={pendingScan}
+				title={t("security.enableScanTitle")}
+				warning={t("security.enableScanWarning")}
+			/>
 		</div>
 	);
 }

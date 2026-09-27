@@ -14,6 +14,7 @@ import {
 	GitBranch,
 	GitPullRequestClosed,
 	GitPullRequestDraft,
+	RefreshCw,
 	XCircle,
 } from "lucide-react";
 import { useState } from "react";
@@ -78,6 +79,7 @@ export function PrDetailPane({ onCreateOpen }: { onCreateOpen: () => void }) {
 	const detail = usePrCenterStore(state => state.detail);
 	const detailLoading = usePrCenterStore(state => state.detailLoading);
 	const selected = usePrCenterStore(state => state.selected);
+	const error = usePrCenterStore(state => state.error);
 	const [bodyExpanded, setBodyExpanded] = useState(false);
 
 	if (selected === null) {
@@ -91,10 +93,28 @@ export function PrDetailPane({ onCreateOpen }: { onCreateOpen: () => void }) {
 			</div>
 		);
 	}
-	if (detailLoading || !detail) {
+	// A selected PR whose detail read failed must not sit on "Loading…" forever.
+	if (detailLoading || (!detail && !error)) {
 		return (
 			<div className="flex h-full items-center justify-center gap-2 text-omp-md text-(--omp-dim)">
 				<Spinner size="sm" /> {t("prCenter.loading")}
+			</div>
+		);
+	}
+	if (!detail) {
+		return (
+			<div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+				<p role="alert" className="max-w-sm text-omp-md text-(--omp-error)">
+					{error}
+				</p>
+				<Button
+					icon={<RefreshCw size={12} />}
+					onClick={() => void usePrCenterStore.getState().select(selected)}
+					size="sm"
+					variant="secondary"
+				>
+					{t("common.retry")}
+				</Button>
 			</div>
 		);
 	}
@@ -104,7 +124,10 @@ export function PrDetailPane({ onCreateOpen }: { onCreateOpen: () => void }) {
 	const shownBody = bodyExpanded || !collapsible ? detail.body : bodyLines.slice(0, BODY_COLLAPSE_LINES).join("\n");
 
 	return (
-		<div className="flex flex-col gap-4 p-4">
+		// Keyed on the selection so switching PRs replays the entrance instead of
+		// mutating the previous PR's body in place, and resets the local body
+		// expansion that belongs to the PR being left behind.
+		<div key={selected} className="omp-fade-up flex flex-col gap-4 p-4">
 			{/* Header card */}
 			<div className="flex flex-col gap-2 rounded-lg border border-(--omp-border-muted) bg-transparent p-3">
 				<div className="flex items-start gap-2">

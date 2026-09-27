@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# An older renderer config wrote its entry here. It is a build output, not a source
+# file; the Pages site lives in site/.
+/index.html
+
 # Build output
 out/
 dist/

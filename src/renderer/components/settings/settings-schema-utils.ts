@@ -23,6 +23,8 @@ const CONDITION_EVALUATORS: Record<string, (values: Record<string, unknown>) => 
 	autoThinkingActive: values => values.defaultThinkingLevel === "auto",
 	usageAwareFallbackEnabled: values => values["retry.usageAwareFallback"] === true,
 	planModeEnabled: values => values["plan.enabled"] === true,
+	vimModeEnabled: values => values["tui.vimMode"] === true,
+	planAutosaveEnabled: values => values["plan.enabled"] === true && values["plan.autosave"] === true,
 	unexpectedStopDetection: values => values["features.unexpectedStopDetection"] === true,
 };
 
@@ -50,6 +52,17 @@ const TERMINAL_DISPLAY_SETTINGS = new Set([
 	"spelling.typoDetection",
 	"spelling.autocomplete",
 	"spelling.autocorrect",
+	// Vim mode's indicator is rendered only by the TUI status line. Keeping the
+	// schema row out of the GUI prevents a control that can never affect this
+	// renderer from being advertised under a conditional gate.
+	"tui.vimModeDisplay",
+	"tui.mouse",
+	"tui.maxInlineImageColumns",
+	"tui.maxInlineImageRows",
+	"tui.maxInlineImages",
+	"statusLine.leftSegments",
+	"statusLine.rightSegments",
+	"statusLine.segmentOptions",
 ]);
 
 export function isSettingSupportedInGui(entry: { path?: string; tuiOnly?: boolean }): boolean {

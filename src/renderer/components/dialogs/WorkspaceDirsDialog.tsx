@@ -20,7 +20,7 @@ import {
 } from "../../lib/workspace-dirs";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Modal, Spinner } from "../common";
+import { AsyncSection, Badge, Button, Modal } from "../common";
 
 export function WorkspaceDirsDialog() {
 	const tabRpc = useTabRpc();
@@ -28,6 +28,7 @@ export function WorkspaceDirsDialog() {
 	const open = useUiStore(state => state.workspaceDirsOpen);
 	const close = useUiStore(state => state.closeWorkspaceDirs);
 	const busy = useSessionStore(state => state.isStreaming || state.isCompacting);
+	const sidecarReady = useSessionStore(state => state.status) === "ready";
 	const [directories, setDirectories] = useState<RpcWorkspaceDirectory[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,11 @@ export function WorkspaceDirsDialog() {
 	const reload = useCallback(async () => {
 		setLoading(true);
 		setError(null);
+		if (!sidecarReady) {
+			setError(t("sidecar.notResponding"));
+			setLoading(false);
+			return;
+		}
 		try {
 			const response = await tabRpc.getDirectories();
 			if (response.success) {
@@ -49,7 +55,7 @@ export function WorkspaceDirsDialog() {
 		} finally {
 			setLoading(false);
 		}
-	}, [tabRpc.getDirectories]);
+	}, [sidecarReady, t, tabRpc.getDirectories]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -58,6 +64,7 @@ export function WorkspaceDirsDialog() {
 	}, [open, reload]);
 
 	const onAdd = async (): Promise<void> => {
+		if (!sidecarReady) return;
 		const path = await pickWorkspaceDirectory();
 		if (!path) return;
 		setMutating(true);
@@ -70,6 +77,7 @@ export function WorkspaceDirsDialog() {
 	};
 
 	const onRemove = async (path: string): Promise<void> => {
+		if (!sidecarReady) return;
 		setMutating(true);
 		setConfirmRemove(null);
 		try {
@@ -81,6 +89,7 @@ export function WorkspaceDirsDialog() {
 	};
 
 	const onMove = async (): Promise<void> => {
+		if (!sidecarReady) return;
 		const path = await pickWorkspaceDirectory();
 		if (!path) return;
 		setMutating(true);
@@ -98,16 +107,17 @@ export function WorkspaceDirsDialog() {
 			<div className="flex flex-col gap-3">
 				<div className="text-xs text-(--omp-dim)">{t("workspaceDirs.subtitle")}</div>
 				<div className="max-h-[38vh] min-h-16 overflow-y-auto rounded-md border border-(--omp-border-muted)">
-					{error ? (
-						<div className="p-4 text-xs text-[var(--omp-error)]">{error}</div>
-					) : loading ? (
-						<div className="flex items-center justify-center gap-2 p-6 text-xs text-(--omp-dim)">
-							<Spinner size="sm" /> {t("workspaceDirs.loading")}
-						</div>
-					) : directories.length === 0 ? (
-						<div className="p-6 text-center text-xs text-(--omp-dim)">{t("workspaceDirs.empty")}</div>
-					) : (
-						directories.map(directory => (
+					<AsyncSection
+						className="min-h-24"
+						empty={directories.length === 0}
+						emptyLabel={t("workspaceDirs.empty")}
+						error={error}
+						hasData={directories.length > 0}
+						loading={loading}
+						loadingLabel={t("workspaceDirs.loading")}
+						onRetry={() => void reload()}
+					>
+						{directories.map(directory => (
 							<div
 								className="flex items-center gap-2 border-b border-(--omp-border-muted) px-3 py-2 last:border-b-0"
 								key={directory.path}
@@ -124,7 +134,7 @@ export function WorkspaceDirsDialog() {
 								) : confirmRemove === directory.path ? (
 									<span className="flex shrink-0 items-center gap-1">
 										<Button
-											disabled={mutating}
+											disabled={mutating || !sidecarReady}
 											onClick={() => void onRemove(directory.path)}
 											size="sm"
 											variant="danger"
@@ -142,25 +152,31 @@ export function WorkspaceDirsDialog() {
 									</span>
 								) : (
 									<Button
-										disabled={mutating || busy}
+										disabled={mutating || busy || !sidecarReady}
 										icon={<Trash2 size={13} />}
 										onClick={() => setConfirmRemove(directory.path)}
 										size="sm"
-										title={busy ? t("workspaceDirs.busy") : t("workspaceDirs.remove")}
+										title={
+											!sidecarReady
+												? t("sidecar.notResponding")
+												: busy
+													? t("workspaceDirs.busy")
+													: t("workspaceDirs.remove")
+										}
 										variant="ghost"
 									/>
 								)}
 							</div>
-						))
-					)}
+						))}
+					</AsyncSection>
 				</div>
 				<div className="flex items-center justify-between gap-2">
 					<Button
-						disabled={mutating || busy || loading}
+						disabled={mutating || busy || loading || !sidecarReady}
 						icon={<FolderPlus size={14} />}
 						onClick={() => void onAdd()}
 						size="sm"
-						title={busy ? t("workspaceDirs.busy") : undefined}
+						title={!sidecarReady ? t("sidecar.notResponding") : busy ? t("workspaceDirs.busy") : undefined}
 					>
 						{t("workspaceDirs.add")}
 					</Button>
@@ -169,11 +185,11 @@ export function WorkspaceDirsDialog() {
 					<div className="mb-1 text-xs font-medium text-(--omp-text)">{t("workspaceDirs.moveTitle")}</div>
 					<div className="mb-2 text-xs text-(--omp-dim)">{t("workspaceDirs.moveDesc")}</div>
 					<Button
-						disabled={mutating || busy || loading}
+						disabled={mutating || busy || loading || !sidecarReady}
 						icon={<PackageOpen size={14} />}
 						onClick={() => void onMove()}
 						size="sm"
-						title={busy ? t("workspaceDirs.busy") : undefined}
+						title={!sidecarReady ? t("sidecar.notResponding") : busy ? t("workspaceDirs.busy") : undefined}
 					>
 						{t("workspaceDirs.move")}
 					</Button>

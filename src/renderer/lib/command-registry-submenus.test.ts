@@ -16,6 +16,7 @@ import { translate } from "./i18n";
 
 const ctx: CommandRegistryContext = {
 	t: translate,
+	tabKind: "agent",
 	isStreaming: false,
 	fastModeEnabled: false,
 	autoCompaction: false,
@@ -134,12 +135,6 @@ describe("nativized command affordances", () => {
 		expect(affordance.kind).toBe(kind);
 	});
 
-	it.each(["ssh list", "ssh add", "ssh remove"] as const)("%s is unavailable with a reason", name => {
-		const affordance = affordanceOf(name);
-		expect(affordance.kind).toBe("unavailable");
-		if (affordance.kind === "unavailable") expect(affordance.reason.length).toBeGreaterThan(0);
-	});
-
 	it.each([
 		"advisor status",
 		"advisor dump",
@@ -210,6 +205,15 @@ describe("nativized action wiring", () => {
 		affordance.open();
 		expect(openSettings).toHaveBeenCalledWith("skills");
 		expect(openExtensions).not.toHaveBeenCalled();
+	});
+
+	it("SSH actions open the native host manager, where selection and confirmation happen", () => {
+		for (const name of ["ssh list", "ssh add", "ssh remove"]) {
+			const affordance = wired(name);
+			if (affordance.kind !== "window") throw new Error("expected native SSH manager");
+			affordance.open();
+			expect(openSettings).toHaveBeenLastCalledWith("ssh");
+		}
 	});
 
 	it.each([

@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { extractImageDataUrl, extractImageDataUrls, formatShortClock, resultDetails, resultText } from "./format";
+import {
+	extractImageDataUrl,
+	extractImageDataUrls,
+	formatShortClock,
+	resultDetails,
+	resultText,
+	sanitizeToolText,
+} from "./format";
 
 describe("formatShortClock", () => {
 	it("keeps timeline labels to hour and minute", () => {
@@ -83,5 +90,42 @@ describe("image result extraction", () => {
 
 		expect(extractImageDataUrls(result)).toEqual(["data:image/png;base64,first", "data:image/jpeg;base64,second"]);
 		expect(extractImageDataUrl(result)).toBeNull();
+	});
+
+	it("reads generate_image's untagged {data, mimeType} pairs as pictures", () => {
+		// Not content blocks — `generate_image` reports the raw bytes it got back,
+		// so a renderer that only understands `{type: "image"}` shows no preview.
+		const result = {
+			content: [{ type: "text", text: "Provider: openai\nModel: gpt-image-1\nGenerated 2 image(s):" }],
+			details: {
+				provider: "openai",
+				imageCount: 2,
+				imagePaths: ["/tmp/omp-image-1.png", "/tmp/omp-image-2.jpg"],
+				images: [
+					{ data: "first", mimeType: "image/png" },
+					{ data: "second", mimeType: "image/jpeg" },
+				],
+			},
+		};
+
+		expect(extractImageDataUrls(result)).toEqual(["data:image/png;base64,first", "data:image/jpeg;base64,second"]);
+	});
+});
+
+describe("sanitizeToolText", () => {
+	it("strips ANSI SGR color codes down to visible text", () => {
+		expect(sanitizeToolText("\x1b[31mred\x1b[0m plain")).toBe("red plain");
+	});
+
+	it("expands tabs to four spaces so they never punch holes in the layout", () => {
+		expect(sanitizeToolText("a\tb")).toBe("a    b");
+	});
+
+	it("strips an OSC-8 hyperlink escape but keeps its anchor text", () => {
+		expect(sanitizeToolText("\x1b]8;;https://example.com\x07link\x1b]8;;\x07")).toBe("link");
+	});
+
+	it("handles color and tabs together", () => {
+		expect(sanitizeToolText("\x1b[1m\x1b[32mgreen\ttab\x1b[0m")).toBe("green    tab");
 	});
 });

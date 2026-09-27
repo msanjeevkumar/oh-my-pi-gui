@@ -11,6 +11,7 @@ import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { AgentProgress, SubagentSnapshot } from "../../../shared/rpc-types";
 import { I18nProvider } from "../../lib/i18n";
+import { useSessionStore } from "../../stores/session";
 import { useSubagentsStore } from "../../stores/subagents";
 
 const { document, window, Event, HTMLElement, Node } = parseHTML("<html><body></body></html>");
@@ -40,6 +41,7 @@ interface OmpMock {
 	getSubagents: Mock;
 	getSubagentMessages: Mock;
 	abortSubagent: Mock;
+	setAgentsPaused: Mock;
 	reviveSubagent: Mock;
 	abort: Mock;
 }
@@ -50,6 +52,7 @@ function installOmpMock(overrides: Partial<OmpMock> = {}): OmpMock {
 		getSubagentMessages: vi.fn(async () => ok({ messages: [], nextByte: 0 })),
 		abortSubagent: vi.fn(async () => ok({ ok: true })),
 		reviveSubagent: vi.fn(async () => ok({ ok: true })),
+		setAgentsPaused: vi.fn(async (enabled: boolean) => ok({ paused: enabled, pausedAt: enabled ? 123 : undefined })),
 		abort: vi.fn(async () => ok({})),
 		...overrides,
 	};
@@ -123,6 +126,7 @@ afterEach(async () => {
 	}
 	container?.remove();
 	useSubagentsStore.getState().reset();
+	useSessionStore.getState().reset();
 });
 
 interface TestElement {
@@ -151,6 +155,23 @@ function bodyText(): string {
 }
 
 describe("AgentHubWindow hub tab", () => {
+	it("pauses and resumes all agents from the hub header", async () => {
+		const omp = installOmpMock();
+		useSessionStore.getState().setStatus("ready", "/repo");
+		await mount(<AgentHubWindow initialTab="hub" onClose={() => {}} open />);
+
+		const pause = queryAll('button[title="Freeze all agents until resumed"]')[0];
+		if (!pause) throw new Error("pause button not found");
+		await click(pause);
+		expect(omp.setAgentsPaused).toHaveBeenCalledWith(true);
+		expect(useSessionStore.getState().agentsPaused).toBe(true);
+
+		const resume = queryAll('button[title="Resume all agents"]')[0];
+		if (!resume) throw new Error("resume button not found");
+		await click(resume);
+		expect(omp.setAgentsPaused).toHaveBeenCalledWith(false);
+		expect(useSessionStore.getState().agentsPaused).toBe(false);
+	});
 	it("distinguishes same-type agents by task label and shows model/kind/status", async () => {
 		installOmpMock();
 		seedHub();
@@ -191,6 +212,28 @@ describe("AgentHubWindow hub tab", () => {
 		expect(bodyText()).not.toContain("another rendered template");
 	});
 
+	it("says the roster failed to load instead of claiming nothing was spawned", async () => {
+		installOmpMock({
+			getSubagents: vi.fn(async () => ({
+				type: "response",
+				command: "get_subagents",
+				success: false,
+				error: "sidecar went away",
+			})),
+		});
+		// Hydration's roster pull, which is the only read the hub tab gets until a
+		// turn streams again.
+		await act(async () => {
+			await useSubagentsStore.getState().refresh();
+		});
+		await mount(<AgentHubWindow initialTab="hub" onClose={() => {}} open />);
+
+		const text = document.body.textContent ?? "";
+		expect(text).toContain("Could not load the subagent roster.");
+		expect(text).toContain("sidecar went away");
+		expect(text).not.toContain("No subagents spawned yet.");
+	});
+
 	it("查看消息 opens a transcript slide-over and back closes it", async () => {
 		const omp = installOmpMock();
 		seedHub();
@@ -217,6 +260,7 @@ describe("AgentHubWindow hub tab", () => {
 			),
 		});
 		seedHub();
+		useSessionStore.getState().setStatus("ready", "/repo");
 		await mount(<AgentHubWindow initialTab="hub" onClose={() => {}} open />);
 
 		// Live non-advisor rows (parked a2 + running a1) get abort; advisor a3 doesn't.

@@ -6,18 +6,15 @@
  * + debounce. Extracted verbatim from InputArea.
  */
 
-import { useEffect } from "react";
-import type { AvailableCommand } from "../../../shared/rpc-types";
+import { useEffect, useState } from "react";
+import type { SessionKind } from "../../../shared/ipc-types";
+import type { AvailableCommand, AvailableModelsResult, ModelInfo } from "../../../shared/rpc-types";
+import { isCommandAvailable } from "../../lib/command-availability";
 import { getEmojiSuggestions } from "../../lib/emoji";
 import { useT } from "../../lib/i18n";
 import { useTabRpc } from "../../lib/tab-rpc";
-import {
-	CHAT_DEAD_COMMANDS,
-	fuzzyScore,
-	MAX_MENTION_FILE_ITEMS,
-	MAX_MENU_ITEMS,
-	MENTION_SCHEMES,
-} from "./input-area-utils";
+import { useModelStore } from "../../stores/model";
+import { fuzzyScore, MAX_MENTION_FILE_ITEMS, MAX_MENU_ITEMS, MENTION_SCHEMES } from "./input-area-utils";
 
 export interface CompletionItem {
 	value: string;
@@ -28,11 +25,20 @@ export interface CompletionItem {
 
 /** Completion menu state: the winning provider's items + replace range. */
 export interface CompletionMenu {
-	source: "slash-arg" | "github-ref" | "command" | "mention" | "emoji";
+	source: "slash-arg" | "github-ref" | "command" | "mention" | "model" | "emoji";
 	rangeStart: number;
 	rangeEnd: number;
 	items: CompletionItem[];
 	index: number;
+}
+
+/** Replace only the provider's prefix; never consume text after the live caret. */
+export function applyCompletion(text: string, cursor: number, menu: CompletionMenu, item: CompletionItem) {
+	if (cursor !== menu.rangeEnd) return null;
+	return {
+		text: `${text.slice(0, menu.rangeStart)}${item.value}${text.slice(cursor)}`,
+		caret: menu.rangeStart + item.value.length,
+	};
 }
 
 export function useCompletionMenu({
@@ -40,7 +46,7 @@ export function useCompletionMenu({
 	filePaths,
 	commands,
 	emojiAutocomplete,
-	isChat,
+	tabKind,
 	textareaRef,
 	setMenu,
 }: {
@@ -48,16 +54,33 @@ export function useCompletionMenu({
 	filePaths: string[];
 	commands: AvailableCommand[];
 	emojiAutocomplete: boolean;
-	isChat: boolean;
+	tabKind: SessionKind;
 	textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 	setMenu: (menu: CompletionMenu | null) => void;
 }) {
 	const t = useT();
 	const rpc = useTabRpc();
+	const models = useModelStore(state => state.availableModels);
+	const isChat = tabKind === "chat";
+	const [selection, setSelection] = useState("");
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		const update = () => setSelection(`${el.selectionStart}:${el.selectionEnd}`);
+		el.addEventListener("select", update);
+		el.addEventListener("keyup", update);
+		el.addEventListener("click", update);
+		return () => {
+			el.removeEventListener("select", update);
+			el.removeEventListener("keyup", update);
+			el.removeEventListener("click", update);
+		};
+	}, [textareaRef]);
 	// Derive the completion menu from the draft around the caret. Provider
 	// chain (TUI getSuggestions order): slash-arg → github-ref → slash names →
 	// @mention → emoji. First provider with items wins; async providers (emoji
 	// buckets, dynamic arg RPC) resolve through a cancel token + debounce.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `selection` is the caret mirror; the effect reads `el.selectionStart` directly and re-runs on that state change.
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) {
@@ -65,13 +88,17 @@ export function useCompletionMenu({
 			return;
 		}
 		let cancelled = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: number | undefined;
 		const cursor = el.selectionStart ?? text.length;
 		const before = text.slice(0, cursor);
 		const apply = (result: Omit<CompletionMenu, "index" | "rangeEnd"> | null) => {
-			if (cancelled) return;
+			if (cancelled || (el.selectionStart ?? text.length) !== cursor) return;
 			setMenu(result && result.items.length > 0 ? { ...result, rangeEnd: cursor, index: 0 } : null);
 		};
+		if (el.selectionEnd !== cursor) {
+			apply(null);
+			return;
+		}
 
 		// 1. Slash-command ARGUMENTS: "/cmd <args>" with the slash at buffer start.
 		const argMatch = /^\/([a-z-]+)\s(.+)$/i.exec(before);
@@ -111,7 +138,7 @@ export function useCompletionMenu({
 					}
 				}
 				if (command.hasDynamicArgCompletion) {
-					timer = setTimeout(() => {
+					timer = window.setTimeout(() => {
 						void rpc.getCommandArgCompletions(command.name, argPrefix).then(response => {
 							if (!response.success) {
 								apply(null);
@@ -169,8 +196,9 @@ export function useCompletionMenu({
 			const items = commands
 				.filter(
 					command =>
-						// Chat tabs: never offer commands that are silent no-ops there.
-						(!isChat || !CHAT_DEAD_COMMANDS.has(command.name)) &&
+						// Every surface shares one availability rule: never offer a command
+						// that does nothing in this tab kind.
+						isCommandAvailable(tabKind, command.name) &&
 						(!query ||
 							command.name.toLowerCase().includes(query) ||
 							command.aliases?.some(alias => alias.toLowerCase().includes(query))),
@@ -211,7 +239,58 @@ export function useCompletionMenu({
 			};
 		}
 
-		// 5. Emoji (async; the bucket JSON lazy-loads on first trigger).
+		// 5. Model delegation uses the same whitespace-delimited ^selector syntax
+		// as tui/prompt/model-mention-syntax.ts. The sidecar owns model scope and
+		// identity policy; never infer selectors from display names in the GUI.
+		const modelMatch = /(?:^|\s)(\^[^\s^]*)$/.exec(before);
+		if (modelMatch) {
+			const prefix = modelMatch[1];
+			const rangeStart = cursor - prefix.length;
+			const query = prefix.slice(1);
+			const showModels = (available: ModelInfo[]) => {
+				const scored = available.flatMap(model => {
+					const selector = `${model.provider}/${model.id}`;
+					const score = fuzzyScore(query, `${selector} ${model.name ?? ""}`);
+					return score === null ? [] : [{ model, selector, score }];
+				});
+				scored.sort((a, b) => b.score - a.score);
+				apply({
+					source: "model",
+					rangeStart,
+					items: scored.slice(0, MAX_MENU_ITEMS).map(({ model, selector }) => ({
+						value: `^${selector} `,
+						label: `^${selector}`,
+						description: model.name || model.id,
+					})),
+				});
+			};
+			// Tool-free chats cannot delegate tasks.
+			if (isChat) apply(null);
+			else if (models.length > 0) showModels(models);
+			else {
+				apply(null);
+				timer = window.setTimeout(() => {
+					// Forced: a non-forced read is answered by a still-fresh cache row,
+					// which hides the model a just-added provider contributed.
+					void rpc
+						.getAvailableModels(true)
+						.then(response => {
+							if (cancelled) return;
+							const data = response.success ? (response.data as AvailableModelsResult | undefined) : undefined;
+							showModels(data?.models ?? []);
+						})
+						.catch(() => {
+							if (!cancelled) apply(null);
+						});
+				}, 120);
+			}
+			return () => {
+				cancelled = true;
+				window.clearTimeout(timer);
+			};
+		}
+
+		// 6. Emoji (async; the bucket JSON lazy-loads on first trigger).
 		if (emojiAutocomplete) {
 			void getEmojiSuggestions(before).then(result => {
 				if (!result) {
@@ -229,5 +308,5 @@ export function useCompletionMenu({
 		return () => {
 			cancelled = true;
 		};
-	}, [text, filePaths, commands, emojiAutocomplete, isChat, textareaRef.current, setMenu, t, rpc]);
+	}, [text, selection, models, filePaths, commands, emojiAutocomplete, tabKind, textareaRef, setMenu, t, rpc]);
 }

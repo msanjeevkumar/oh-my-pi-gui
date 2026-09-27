@@ -17,12 +17,15 @@ import { useTabRpc } from "../../lib/tab-rpc";
  * everything.
  */
 
-import { ArrowLeft, Check, MessageSquare, RefreshCw, Square, X } from "lucide-react";
+import { ArrowLeft, Check, MessageSquare, Pause, Play, RefreshCw, Square, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { RpcAgentDefinitionInfo, SubagentSnapshot } from "../../../shared/rpc-types";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { isImeKeyEvent } from "../../lib/ime";
 import { abortActiveTurn } from "../../lib/messages";
+import { useNowTick } from "../../lib/now-tick";
+import { useSessionStore } from "../../stores/session";
 import { useSubagentsStore } from "../../stores/subagents";
 import { toast } from "../../stores/toast";
 import { Badge, Button, Input, Modal, Spinner, type TabItem, Tabs } from "../common";
@@ -250,11 +253,13 @@ const DefinitionRow = memo(function DefinitionRow({
 							<Input
 								autoFocus
 								className="h-6 w-52 text-omp-sm"
+								disabled={busy}
 								mono
 								onChange={event => setDraft(event.target.value)}
 								onKeyDown={event => {
 									// Enter submits; Escape is owned by the Modal (closes the window),
 									// matching every other GUI dialog's edit-in-place behavior.
+									if (isImeKeyEvent(event)) return;
 									if (event.key === "Enter") submit();
 								}}
 								placeholder={t("agentHub.defs.modelPlaceholder")}
@@ -407,10 +412,12 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 					value={query}
 				/>
 				<Button
+					disabled={!rpc.ready}
 					icon={<RefreshCw size={12} />}
 					loading={rpc.loading}
 					onClick={rpc.refresh}
 					size="sm"
+					title={!rpc.ready ? t("agentHub.notConnected") : t("agentHub.refresh")}
 					variant="ghost"
 				>
 					{t("agentHub.refresh")}
@@ -444,7 +451,14 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 						<div className="m-auto flex max-w-md flex-col items-center gap-2 rounded-lg border border-(--omp-border-muted) px-4 py-6 text-center">
 							<span className="text-omp-md font-medium text-(--omp-error)">{t("agentHub.loadFailed")}</span>
 							<span className="text-omp-sm break-all text-(--omp-dim)">{rpc.error}</span>
-							<Button icon={<RefreshCw size={12} />} onClick={rpc.refresh} size="sm" variant="secondary">
+							<Button
+								disabled={!rpc.ready}
+								icon={<RefreshCw size={12} />}
+								onClick={rpc.refresh}
+								size="sm"
+								title={!rpc.ready ? t("agentHub.notConnected") : t("agentHub.retry")}
+								variant="secondary"
+							>
 								{t("agentHub.retry")}
 							</Button>
 						</div>
@@ -460,7 +474,7 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 						) : (
 							filtered.map(entry => (
 								<DefinitionRow
-									busy={rpc.busy}
+									busy={rpc.busy || !rpc.ready}
 									editing={editingName === entry.name}
 									entry={entry}
 									key={entry.name}
@@ -509,6 +523,7 @@ const HubRow = memo(function HubRow({
 	onRevive,
 	onAbortConfirm,
 	onAbortCancel,
+	sidecarReady,
 }: {
 	agent: SubagentSnapshot;
 	now: number;
@@ -519,6 +534,7 @@ const HubRow = memo(function HubRow({
 	onRevive: () => void;
 	onAbortConfirm: () => void;
 	onAbortCancel: () => void;
+	sidecarReady: boolean;
 }) {
 	const t = useT();
 	const meta = statusMeta(agent.status);
@@ -565,8 +581,8 @@ const HubRow = memo(function HubRow({
 				{actionableLive && actionState !== "confirming" && (
 					<button
 						type="button"
-						disabled={actionState === "working"}
-						title={t("agentHub.hub.abortAgent")}
+						disabled={actionState === "working" || !sidecarReady}
+						title={!sidecarReady ? t("agentHub.notConnected") : t("agentHub.hub.abortAgent")}
 						onClick={onAbort}
 						className="omp-pressable mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-(--omp-muted) hover:bg-(--omp-error-dim) hover:text-(--omp-error) disabled:opacity-40"
 					>
@@ -577,6 +593,7 @@ const HubRow = memo(function HubRow({
 					<span className="mr-2 flex shrink-0 items-center gap-0.5">
 						<button
 							type="button"
+							disabled={!sidecarReady}
 							title={t("agentHub.hub.confirmAbort")}
 							onClick={onAbortConfirm}
 							className="omp-pressable flex h-6 w-6 items-center justify-center rounded-md border border-[color-mix(in_srgb,var(--omp-error)_35%,transparent)] bg-transparent text-(--omp-error)"
@@ -596,8 +613,8 @@ const HubRow = memo(function HubRow({
 				{revivable && (
 					<button
 						type="button"
-						disabled={actionState === "working"}
-						title={t("agentHub.hub.reviveAgent")}
+						disabled={actionState === "working" || !sidecarReady}
+						title={!sidecarReady ? t("agentHub.notConnected") : t("agentHub.hub.reviveAgent")}
 						onClick={onRevive}
 						className="omp-pressable mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-(--omp-muted) hover:bg-(--omp-selected-bg) hover:text-(--omp-accent) disabled:opacity-40"
 					>
@@ -647,7 +664,7 @@ function AgentTranscriptDrawer({ agent, onClose }: { agent: SubagentSnapshot; on
 	}, [onClose]);
 
 	return (
-		<div className="omp-fade-in absolute inset-0 z-10 flex flex-col bg-(--omp-modal-bg)">
+		<div className="omp-slide-in-right absolute inset-0 z-10 flex flex-col bg-(--omp-modal-bg)">
 			<div className="flex shrink-0 items-center gap-2 border-b border-(--omp-border-muted) px-3 py-2">
 				<button
 					aria-label={t("agentHub.hub.backToHub")}
@@ -675,9 +692,12 @@ function AgentTranscriptDrawer({ agent, onClose }: { agent: SubagentSnapshot; on
 function HubTab() {
 	const tabRpc = useTabRpc();
 	const t = useT();
+	const sidecarReady = useSessionStore(s => s.status) === "ready";
+	const agentsPaused = useSessionStore(s => s.agentsPaused);
+	const [pausePending, setPausePending] = useState(false);
 	const subagents = useSubagentsStore(s => s.subagents);
+	const loadError = useSubagentsStore(s => s.error);
 	const [viewingId, setViewingId] = useState<string | null>(null);
-	const [now, setNow] = useState(() => Date.now());
 	const [aborting, setAborting] = useState(false);
 
 	// Close the slide-over if its agent leaves the roster (released mid-view).
@@ -715,15 +735,11 @@ function HubTab() {
 	}, [subagents]);
 
 	const hasRunning = liveCount > 0;
-
-	useEffect(() => {
-		if (!hasRunning) return;
-		const timer = setInterval(() => setNow(Date.now()), 1000);
-		return () => clearInterval(timer);
-	}, [hasRunning]);
+	const now = useNowTick(hasRunning);
 
 	// Session-scoped abort: stops the active turn (subagents included).
 	const abortTurn = useCallback(async () => {
+		if (!sidecarReady) return;
 		setAborting(true);
 		try {
 			const res = await abortActiveTurn();
@@ -735,14 +751,35 @@ function HubTab() {
 		} finally {
 			setAborting(false);
 		}
-	}, [t]);
+	}, [sidecarReady, t]);
+	const toggleAgentsPaused = useCallback(async () => {
+		if (!sidecarReady || pausePending) return;
+		setPausePending(true);
+		try {
+			const response = await tabRpc.setAgentsPaused(!agentsPaused);
+			if (!response.success) throw new Error(response.error);
+			const data = response.data as { paused?: boolean; pausedAt?: number } | undefined;
+			const paused = data?.paused ?? !agentsPaused;
+			useSessionStore.setState({
+				agentsPaused: paused,
+				agentsPausedAt: paused ? (data?.pausedAt ?? Date.now()) : null,
+			});
+		} catch (cause) {
+			toast({ variant: "error", title: t("agentHub.hub.pauseFailed"), message: String(cause) });
+		} finally {
+			setPausePending(false);
+		}
+	}, [agentsPaused, pausePending, sidecarReady, t, tabRpc.setAgentsPaused]);
 
 	// Per-agent lifecycle actions (TUI hub `x`/`r` parity). Refetch the list
 	// after each mutation — the release/revival may not emit a lifecycle frame.
 	// The store refresh MERGES, so finished agents survive the fetch.
 	const [rowAction, setRowAction] = useState<{ id: string; state: "confirming" | "working" } | null>(null);
 
-	const refreshSubagents = useCallback(() => useSubagentsStore.getState().refresh(), []);
+	const refreshSubagents = useCallback(() => {
+		if (!sidecarReady) return;
+		return useSubagentsStore.getState().refresh();
+	}, [sidecarReady]);
 
 	const subagentReason = useCallback(
 		(reason: string | undefined): string => {
@@ -764,6 +801,7 @@ function HubTab() {
 
 	const abortAgent = useCallback(
 		async (id: string) => {
+			if (!sidecarReady) return;
 			setRowAction({ id, state: "working" });
 			try {
 				const res = await tabRpc.abortSubagent(id);
@@ -787,11 +825,12 @@ function HubTab() {
 				setRowAction(null);
 			}
 		},
-		[t, subagentReason, refreshSubagents, tabRpc.abortSubagent],
+		[sidecarReady, t, subagentReason, refreshSubagents, tabRpc.abortSubagent],
 	);
 
 	const reviveAgent = useCallback(
 		async (id: string) => {
+			if (!sidecarReady) return;
 			setRowAction({ id, state: "working" });
 			try {
 				const res = await tabRpc.reviveSubagent(id);
@@ -815,7 +854,7 @@ function HubTab() {
 				setRowAction(null);
 			}
 		},
-		[t, subagentReason, refreshSubagents, tabRpc.reviveSubagent],
+		[sidecarReady, t, subagentReason, refreshSubagents, tabRpc.reviveSubagent],
 	);
 
 	return (
@@ -826,13 +865,31 @@ function HubTab() {
 						{t(statusMeta(status).labelKey)} {count}
 					</Badge>
 				))}
+				<Button
+					aria-pressed={agentsPaused}
+					disabled={!sidecarReady}
+					icon={agentsPaused ? <Play size={11} /> : <Pause size={11} />}
+					loading={pausePending}
+					onClick={() => void toggleAgentsPaused()}
+					size="sm"
+					title={
+						!sidecarReady
+							? t("agentHub.notConnected")
+							: agentsPaused
+								? t("agentHub.hub.resumeAgents")
+								: t("cmd.pause.desc")
+					}
+				>
+					{agentsPaused ? t("agentHub.hub.resumeAgents") : t("agentHub.hub.pauseAgents")}
+				</Button>
 				<span className="ml-auto">
 					<Button
-						disabled={!hasRunning}
+						disabled={!hasRunning || !sidecarReady}
 						icon={<Square size={11} />}
 						loading={aborting}
 						onClick={() => void abortTurn()}
 						size="sm"
+						title={!sidecarReady ? t("agentHub.notConnected") : undefined}
 						variant="danger"
 					>
 						{t("agentHub.hub.abortTurn")}
@@ -841,10 +898,33 @@ function HubTab() {
 			</div>
 			<div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
 				{sorted.length === 0 ? (
-					<div className="m-auto px-3 py-8 text-center text-omp-sm leading-relaxed text-(--omp-dim)">
-						{t("subagent.empty")}
-						<br />
-						{t("subagent.emptyHint")}
+					<div className="m-auto flex flex-col items-center gap-2 px-3 py-8 text-center text-omp-sm leading-relaxed text-(--omp-dim)">
+						{/* The roster never loaded is a different claim from none spawned. */}
+						{loadError ? (
+							<>
+								<p role="alert" className="text-(--omp-error)">
+									{t("subagent.loadFailed")}
+									<br />
+									{loadError}
+								</p>
+								<Button
+									icon={<RefreshCw size={12} />}
+									disabled={!sidecarReady}
+									onClick={() => void refreshSubagents()}
+									size="sm"
+									title={!sidecarReady ? t("agentHub.notConnected") : t("common.retry")}
+									variant="secondary"
+								>
+									{t("common.retry")}
+								</Button>
+							</>
+						) : (
+							<>
+								{t("subagent.empty")}
+								<br />
+								{t("subagent.emptyHint")}
+							</>
+						)}
 					</div>
 				) : (
 					sorted.map(agent => (
@@ -858,6 +938,7 @@ function HubTab() {
 							onAbortConfirm={() => void abortAgent(agent.id)}
 							onAbortCancel={() => setRowAction(null)}
 							onRevive={() => void reviveAgent(agent.id)}
+							sidecarReady={sidecarReady}
 						/>
 					))
 				)}

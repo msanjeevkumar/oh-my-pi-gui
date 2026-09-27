@@ -9,8 +9,9 @@ import {
 	resultText,
 } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import { READ_PREVIEW_LINES } from "../../lib/preview";
+import { PREVIEW_HEIGHT_LG, PREVIEW_SCROLL_LG, READ_PREVIEW_LINES } from "../../lib/preview";
 import { CodeBlock } from "../chat/CodeBlock";
+import { ProcReadRenderer } from "./CoordinationRenderer";
 import { PathLink } from "./PathLink";
 import type { ToolRendererProps } from "./ToolCard";
 
@@ -25,6 +26,7 @@ interface ReadToolDetails {
 	url?: string;
 	finalUrl?: string;
 	displayContent?: { text: string; startLine: number; lineNumbers?: Array<number | null> };
+	proc?: unknown;
 }
 
 /** Strip a trailing read selector (`file.ts:50-100`, `db.sqlite:users`) for
@@ -40,6 +42,19 @@ export function ReadRenderer({ args, result, isError, isPartial, partialResult }
 	const path = typeof args.path === "string" ? args.path : "";
 	const effective = isPartial ? partialResult : result;
 	const details = (resultDetails(effective) ?? {}) as ReadToolDetails;
+	if (/^proc:\/\//i.test(path) || details.proc !== undefined) {
+		return (
+			<ProcReadRenderer
+				args={args}
+				id={path.replace(/^proc:\/\//i, "")}
+				isError={isError}
+				isPartial={isPartial}
+				partialResult={partialResult}
+				procDetails={details.proc}
+				result={result}
+			/>
+		);
+	}
 	const structuredPath = details.resolvedPath ?? details.finalUrl ?? details.url;
 	const basePath = typeof structuredPath === "string" && structuredPath ? structuredPath : stripReadSelector(path);
 	const display = details.displayContent;
@@ -60,10 +75,12 @@ export function ReadRenderer({ args, result, isError, isPartial, partialResult }
 				<img
 					src={image}
 					alt={path || t("tools.image.alt")}
-					className="max-h-72 rounded-md border border-[var(--omp-border-muted)] object-contain"
+					className={`${PREVIEW_HEIGHT_LG} rounded-md border border-[var(--omp-border-muted)] object-contain`}
 				/>
 			) : isError ? (
-				<div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--omp-tool-error-bg)] px-2 py-1.5 font-mono text-omp-sm text-[var(--omp-error)]">
+				<div
+					className={`${PREVIEW_SCROLL_LG} whitespace-pre-wrap break-words rounded bg-[var(--omp-tool-error-bg)] px-2 py-1.5 font-mono text-omp-sm text-[var(--omp-error)]`}
+				>
 					{head || t("tools.read.empty")}
 				</div>
 			) : head ? (
@@ -72,8 +89,7 @@ export function ReadRenderer({ args, result, isError, isPartial, partialResult }
 						code={head}
 						language={languageFromPath(basePath)}
 						showLanguage={false}
-						showCopy={false}
-						maxHeightClass="max-h-72"
+						maxHeightClass={PREVIEW_HEIGHT_LG}
 						startLine={display?.startLine}
 						lineNumbers={display?.lineNumbers?.slice(0, head.split("\n").length)}
 					/>

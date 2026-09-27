@@ -9,7 +9,7 @@
 import { parseHTML } from "linkedom";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { RpcResponse } from "../../../shared/rpc-types";
 import { I18nProvider } from "../../lib/i18n";
 import { useSessionStore } from "../../stores/session";
@@ -105,6 +105,10 @@ function installMockOmp(overrides: { rpc?: Partial<MockRpc>; pickedPath?: string
 let container: TestElement;
 let root: Root;
 
+beforeEach(() => {
+	useSessionStore.setState({ status: "ready" });
+});
+
 async function flush(): Promise<void> {
 	await act(async () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
@@ -177,6 +181,31 @@ describe("WorkspaceDirsDialog", () => {
 		useUiStore.getState().openWorkspaceDirs();
 		await mount(<WorkspaceDirsDialog />);
 		expect(document.body.textContent ?? "").toContain("sidecar down");
+		// A refusal is not an empty workspace: the "no directories" message would
+		// tell the user to add a root when the read is what broke.
+		expect(document.body.textContent ?? "").not.toContain("No workspace directories");
+	});
+
+	it("re-reads the roots from the error's retry affordance", async () => {
+		const omp = installMockOmp({
+			rpc: {
+				getDirectories: vi
+					.fn<() => Promise<RpcResponse>>()
+					.mockResolvedValueOnce(failure("sidecar down"))
+					.mockResolvedValue(success(directories(CWD, EXTRA))),
+			},
+		});
+		useUiStore.getState().openWorkspaceDirs();
+		await mount(<WorkspaceDirsDialog />);
+		expect(omp.rpc.getDirectories).toHaveBeenCalledTimes(1);
+
+		await click(findButton("Retry"));
+		await flush();
+
+		expect(omp.rpc.getDirectories).toHaveBeenCalledTimes(2);
+		const text = document.body.textContent ?? "";
+		expect(text).toContain(EXTRA);
+		expect(text).not.toContain("sidecar down");
 	});
 
 	it("adds a directory picked from the native dialog and refreshes the list", async () => {

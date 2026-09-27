@@ -15,15 +15,19 @@ import {
 	buildCommandMenu,
 	type CommandAffordance,
 	type CommandMenuItem,
+	commandArgPrefill,
 	forkSessionFromGui,
 	groupByCategory,
+	prefillComposer,
 } from "../../lib/command-registry";
 import { useT } from "../../lib/i18n";
+import { isImeKeyEvent } from "../../lib/ime";
 import { retryLastTurn as retryLastTurnShared } from "../../lib/messages";
 import { openHandoffDialog } from "../../stores/fork-handoff";
 import { useModelStore } from "../../stores/model";
 import { useSessionStore } from "../../stores/session";
 import { useSettingsStore } from "../../stores/settings";
+import { useActiveTabKind } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Spinner } from "../common";
@@ -31,6 +35,14 @@ import { isTopmostDialog, registerDialogLayer } from "../common/dialog-layer";
 
 const RECENT_KEY = "omp.palette.recent";
 const RECENT_LIMIT = 5;
+
+function sidecarBlocked(item: CommandMenuItem, ready: boolean): boolean {
+	if (ready) return false;
+	if (item.name === "new-tab" || item.name === "new-chat-tab" || item.name === "close" || item.name === "quit") {
+		return false;
+	}
+	return item.affordance.kind === "action" || item.affordance.kind === "toggle" || item.affordance.kind === "prompt";
+}
 
 function loadRecent(): string[] {
 	try {
@@ -151,6 +163,7 @@ export function CommandPalette() {
 	const focusDockCard = useUiStore(state => state.focusDockCard);
 
 	const isStreaming = useSessionStore(s => s.isStreaming);
+	const tabKind = useActiveTabKind();
 	const fastModeEnabled = useModelStore(s => s.fastModeEnabled);
 	const autoCompaction = useSettingsStore(s => s.autoCompaction);
 	const autoRetry = useSettingsStore(s => s.autoRetry);
@@ -159,9 +172,13 @@ export function CommandPalette() {
 	const interruptMode = useSettingsStore(s => s.interruptMode);
 	const planModeEnabled = useSessionStore(s => s.planModeEnabled);
 	const prewalkArmed = useSessionStore(s => s.prewalkArmed);
+	const sidecarReady = useSessionStore(s => s.status) === "ready";
 
 	const [query, setQuery] = useState("");
 	const [availableCommands, setAvailableCommands] = useState<AvailableCommand[]>([]);
+	/** Set when the sidecar command fetch failed; the list stays usable (native
+	 *  rows only) but says so and offers a retry instead of going silent. */
+	const [commandsError, setCommandsError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [activeIndex, setActiveIndex] = useState(0);
 	const [recent, setRecent] = useState<string[]>(loadRecent);
@@ -170,6 +187,37 @@ export function CommandPalette() {
 	const inputRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
 	const dialogRef = useRef<HTMLDivElement>(null);
+	const fetchSeq = useRef(0);
+
+	const refreshCommands = useCallback(() => {
+		const seq = ++fetchSeq.current;
+		if (!sidecarReady) {
+			setAvailableCommands([]);
+			setCommandsError(t("common.notConnected"));
+			setLoading(false);
+			return;
+		}
+		setLoading(true);
+		setCommandsError(null);
+		tabRpc
+			.getAvailableCommands()
+			.then(response => {
+				if (seq !== fetchSeq.current) return;
+				if (!response.success) {
+					setCommandsError(response.error ?? "");
+					return;
+				}
+				const data = response.data as { commands?: AvailableCommand[] } | undefined;
+				setAvailableCommands(data?.commands ?? []);
+			})
+			.catch((error: unknown) => {
+				if (seq !== fetchSeq.current) return;
+				setCommandsError(String(error));
+			})
+			.finally(() => {
+				if (seq === fetchSeq.current) setLoading(false);
+			});
+	}, [sidecarReady, t, tabRpc.getAvailableCommands]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -204,22 +252,8 @@ export function CommandPalette() {
 			}
 		};
 		document.addEventListener("keydown", onKey, true);
-		let cancelled = false;
-		setLoading(true);
-		tabRpc
-			.getAvailableCommands()
-			.then(response => {
-				if (cancelled) return;
-				if (response.success) {
-					const data = response.data as { commands?: AvailableCommand[] } | undefined;
-					setAvailableCommands(data?.commands ?? []);
-				}
-			})
-			.finally(() => {
-				if (!cancelled) setLoading(false);
-			});
+		refreshCommands();
 		return () => {
-			cancelled = true;
 			document.removeEventListener("keydown", onKey, true);
 			// Restore only while this palette is still the top surface: closing
 			// it beneath a newer modal must not yank focus out of that modal.
@@ -227,7 +261,7 @@ export function CommandPalette() {
 			unregisterLayer();
 			if (wasTop) restoreFocus?.focus();
 		};
-	}, [open, tabRpc.getAvailableCommands]);
+	}, [open, refreshCommands]);
 	/** Retry: re-send the most recent user message; interrupt the active turn when streaming. */
 	const retryLastTurn = useCallback(
 		() =>
@@ -239,6 +273,10 @@ export function CommandPalette() {
 
 	/** Retry the last FAILED turn via the retry RPC (TUI /retry parity). */
 	const retryTurn = useCallback(async () => {
+		if (!sidecarReady) {
+			toast({ variant: "warning", message: t("common.notConnected") });
+			return;
+		}
 		const response = await tabRpc.retry();
 		if (!response.success) {
 			toast({ variant: "error", title: t("palette.failed"), message: response.error });
@@ -248,12 +286,13 @@ export function CommandPalette() {
 		if (!data?.retried) {
 			toast({ variant: "warning", title: t("palette.retryNothing"), message: t("palette.retryNothingDesc") });
 		}
-	}, [t, tabRpc.retry]);
+	}, [sidecarReady, t, tabRpc.retry]);
 
 	const menuItems = useMemo(
 		() =>
 			buildCommandMenu({
 				t,
+				tabKind,
 				isStreaming,
 				fastModeEnabled,
 				autoCompaction,
@@ -314,6 +353,7 @@ export function CommandPalette() {
 			}),
 		[
 			t,
+			tabKind,
 			isStreaming,
 			fastModeEnabled,
 			autoCompaction,
@@ -427,6 +467,10 @@ export function CommandPalette() {
 				toast({ variant: "warning", message: `${item.label}: ${item.affordance.reason}` });
 				return;
 			}
+			if (sidecarBlocked(item, sidecarReady)) {
+				toast({ variant: "warning", message: `${item.label}: ${t("common.notConnected")}` });
+				return;
+			}
 			if (item.affordance.kind === "submenu") {
 				setSubmenu(item);
 				setQuery("");
@@ -434,21 +478,46 @@ export function CommandPalette() {
 				requestAnimationFrame(() => inputRef.current?.focus());
 				return;
 			}
+			// Argument-taking commands never run blind: fill the composer with the
+			// invocation prefix so the user supplies the argument.
+			const prefill = commandArgPrefill(item);
+			if (prefill !== null) {
+				recordRecent(item.name);
+				close();
+				prefillComposer(prefill);
+				return;
+			}
 			recordRecent(item.name);
 			void runAffordance(item.affordance, close, t, tabRpc);
 		},
-		[recordRecent, close, t, tabRpc],
+		[recordRecent, close, sidecarReady, t, tabRpc],
 	);
 
-	const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+	/** Move the selection by `delta`, skipping disabled rows. */
+	const step = useCallback(
+		(delta: number) => {
+			setActiveIndex(current => {
+				for (let i = current + delta; i >= 0 && i < flatList.length; i += delta) {
+					if (!sidecarBlocked(flatList[i], sidecarReady)) return i;
+				}
+				return current;
+			});
+		},
+		[flatList, sidecarReady],
+	);
+
+	// Bound to the dialog panel, not the input: after clicking a row, focus sits
+	// on that button, and Escape/arrow keys held only by the input stop working.
+	const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+		if (isImeKeyEvent(event)) return;
 		switch (event.key) {
 			case "ArrowDown":
 				event.preventDefault();
-				setActiveIndex(index => Math.min(index + 1, flatList.length - 1));
+				step(1);
 				break;
 			case "ArrowUp":
 				event.preventDefault();
-				setActiveIndex(index => Math.max(index - 1, 0));
+				step(-1);
 				break;
 			case "ArrowLeft":
 				if (submenu) {
@@ -458,6 +527,9 @@ export function CommandPalette() {
 				}
 				break;
 			case "Enter": {
+				// The input owns Enter. A focused row button already activates itself
+				// on Enter, so running the selection here too would execute twice.
+				if (event.target !== inputRef.current) break;
 				event.preventDefault();
 				const item = flatList[activeIndex];
 				if (item) execute(item);
@@ -471,18 +543,21 @@ export function CommandPalette() {
 		}
 	};
 
-	// Reset on mount AND whenever the result set shrinks below the selection —
-	// a stale index left Enter reading flatList[undefined] (silent no-op) and
+	// Clamp the selection whenever the result set changes (a stale index left
+	// Enter reading flatList[undefined]) and whenever the palette re-opens, since
+	// the open effect resets it to 0 — which may be a disabled row.
 	const resultCount = flatList.length;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `open` re-runs the clamp after the open-effect reset
 	useEffect(() => {
 		setActiveIndex(current => {
-			// Clamp BOTH bounds: a zero-result query can drive the index to -1
-			// (ArrowDown past an empty list), and restoring results must not
-			// preserve that negative index.
-			if (current < 0) return 0;
-			return Math.min(current, Math.max(resultCount - 1, 0));
+			if (resultCount === 0) return 0;
+			const clamped = Math.min(Math.max(current, 0), resultCount - 1);
+			if (!sidecarBlocked(flatList[clamped], sidecarReady)) return clamped;
+			// Never rest on a disabled row: Enter would otherwise be a no-op.
+			const first = flatList.findIndex(item => !sidecarBlocked(item, sidecarReady));
+			return first === -1 ? clamped : first;
 		});
-	}, [resultCount]);
+	}, [resultCount, flatList, open, sidecarReady]);
 
 	useEffect(() => {
 		listRef.current?.querySelector(`[data-palette-index="${activeIndex}"]`)?.scrollIntoView({ block: "nearest" });
@@ -496,16 +571,22 @@ export function CommandPalette() {
 		flatIndex++;
 		const index = flatIndex;
 		const isActive = index === activeIndex;
-		const disabled = item.affordance.kind === "unavailable";
+		const blocked = sidecarBlocked(item, sidecarReady);
+		const disabled = item.affordance.kind === "unavailable" || blocked;
 		const isSubmenu = item.affordance.kind === "submenu";
 		const toggleOn = item.affordance.kind === "toggle" ? item.affordance.get() : null;
 
 		return (
 			<button
+				aria-disabled={disabled}
 				className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors ${
 					isActive ? "bg-(--omp-selected-bg)" : "hover:bg-(--omp-bg-tertiary)"
 				} ${disabled ? "opacity-45" : ""}`}
 				data-palette-index={index}
+				data-command-name={item.name}
+				data-command-aliases={JSON.stringify(item.aliases ?? [])}
+				data-command-kind={item.affordance.kind}
+				disabled={disabled}
 				key={item.name}
 				onClick={() => execute(item)}
 				onMouseEnter={() => setActiveIndex(index)}
@@ -535,7 +616,11 @@ export function CommandPalette() {
 						)}
 					</span>
 					<span className="block truncate text-omp-xs text-(--omp-muted)">
-						{disabled && item.affordance.kind === "unavailable" ? item.affordance.reason : item.description}
+						{disabled
+							? item.affordance.kind === "unavailable"
+								? item.affordance.reason
+								: t("common.notConnected")
+							: item.description}
 					</span>
 				</span>
 				{options?.categoryLabel && (
@@ -559,7 +644,7 @@ export function CommandPalette() {
 
 	return (
 		<div
-			className="omp-dialog-overlay fixed inset-0 z-50 flex items-start justify-center bg-[var(--omp-overlay-bg)] p-4 pt-[12dvh] backdrop-blur-[2px]"
+			className="omp-dialog-overlay omp-fade-in fixed inset-0 z-50 flex items-start justify-center bg-[var(--omp-overlay-bg)] p-4 pt-[12dvh] backdrop-blur-[2px]"
 			onMouseDown={event => {
 				if (event.target === event.currentTarget) close();
 			}}
@@ -569,6 +654,7 @@ export function CommandPalette() {
 				aria-label={t("palette.searchLabel")}
 				aria-modal="true"
 				className="omp-dialog-panel omp-dialog-size-picker overflow-hidden rounded-[14px] border border-(--omp-modal-border) bg-(--omp-modal-bg) shadow-(--omp-shadow-lg)"
+				onKeyDown={onKeyDown}
 				ref={dialogRef}
 				role="dialog"
 			>
@@ -588,7 +674,6 @@ export function CommandPalette() {
 						aria-label={t("palette.searchLabel")}
 						className="min-w-0 flex-1 bg-transparent text-sm text-(--omp-text) placeholder:text-(--omp-dim) focus:outline-none"
 						onChange={event => setQuery(event.target.value)}
-						onKeyDown={onKeyDown}
 						placeholder={submenu ? t("palette.searchSubmenu", { name: submenu.label }) : t("palette.search")}
 						ref={inputRef}
 						value={query}
@@ -598,6 +683,24 @@ export function CommandPalette() {
 						esc
 					</kbd>
 				</div>
+				{commandsError !== null && (
+					<div className="flex items-center gap-2 border-b border-(--omp-border-muted) px-3 py-1.5">
+						<span
+							className="min-w-0 flex-1 truncate text-omp-xs text-(--omp-error)"
+							role="alert"
+							title={commandsError || undefined}
+						>
+							{t("palette.commandsFailed")}
+						</span>
+						<button
+							className="shrink-0 rounded border border-(--omp-border-muted) px-1.5 py-0.5 text-omp-xs text-(--omp-text) hover:bg-(--omp-bg-tertiary)"
+							onClick={refreshCommands}
+							type="button"
+						>
+							{t("common.retry")}
+						</button>
+					</div>
+				)}
 				<div className="omp-command-list overflow-y-auto p-1.5" ref={listRef}>
 					{flatList.length === 0 && !loading && (
 						<div className="px-3 py-8 text-center text-xs text-(--omp-dim)">

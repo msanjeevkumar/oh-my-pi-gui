@@ -67,7 +67,13 @@ function installOmpMock(overrides: Partial<OmpMock> = {}): OmpMock {
 		activeTabId: "t1",
 		bundles: new Map(),
 	});
-	useSessionStore.setState({ sessionId: "s1", sessionFile: "/s1.json", isStreaming: false, isCompacting: false });
+	useSessionStore.setState({
+		status: "ready",
+		sessionId: "s1",
+		sessionFile: "/s1.json",
+		isStreaming: false,
+		isCompacting: false,
+	});
 	const mock: OmpMock = {
 		marketplaceAction: vi.fn(async () => ok({ ok: true })),
 		getPluginDetail: vi.fn(async () => ok(null)),
@@ -358,6 +364,31 @@ describe("PluginDetailDrawer", () => {
 		expect(secretInput.placeholder).toContain("leave empty to keep");
 		const workersInput = queryAll('input[type="number"]')[0] as unknown as { value: string };
 		expect(workersInput.value).toBe("2");
+	});
+
+	it("marks the last good detail as stale when its refetch fails instead of going quiet", async () => {
+		const omp = installOmpMock({
+			getPluginDetail: vi
+				.fn()
+				.mockResolvedValueOnce(ok(detail))
+				.mockResolvedValue({ type: "response", command: "x", success: false, error: "sidecar went away" }),
+		});
+		await mount(<PluginDetailDrawer onChanged={vi.fn(async () => {})} onClose={() => {}} plugin={plugin} />);
+		await flush();
+
+		// Saving re-reads the detail. The re-read fails while the panel is full of
+		// rows: previously the drawer just kept rendering as if nothing happened.
+		await typeInto(queryAll('input[type="number"]')[0], "5");
+		await click(byText("button", "Save settings"));
+		await flush();
+
+		const text = document.body.textContent ?? "";
+		expect(text).toContain("Showing the details from the last successful load.");
+		expect(text).toContain("sidecar went away");
+		expect(queryAll('input[type="number"]')).toHaveLength(1);
+		// The banner is not decoration: Retry re-runs the same read.
+		await click(byText("button", "Retry"));
+		expect(omp.getPluginDetail.mock.calls.length).toBeGreaterThanOrEqual(3);
 	});
 
 	it("saves staged settings with assembled values and refetches the detail", async () => {

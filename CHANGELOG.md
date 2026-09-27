@@ -14,6 +14,79 @@
 - **Quota display**: Kimi and other providers with unspecified quota units show the known usage percentage instead of an internal `unknown` label.
 - **Math rendering**: TeX formulas render correctly in replies and restored history, stay together while streaming, and scroll within narrow windows.
 
+## [0.9.10] - 2026-09-24
+
+### Added
+
+- **Windows x64 packaging**: download an NSIS installer or portable executable with the bundled `omp/18.3.0` sidecar.
+
+### Changed
+
+- **Cross-platform sidecar startup**: Windows resolves `omp.exe`, keeps the inherited tool environment, hides sidecar consoles, and registers the `omp://` protocol in installed builds.
+- **Windows release metadata**: NSIS update metadata and blockmaps are generated alongside the installer and portable artifact.
+
+### Fixed
+
+- **Cross-platform icon generation**: Windows `.ico` output no longer requires macOS `iconutil`; macOS `.icns` generation remains unchanged.
+
+## [0.9.9] - 2026-09-24
+
+### Added
+
+- **Coordination tool views**: `wait`, `read proc://…`, `write agent://…`, and process control writes now render as compact, structured cards instead of generic text or file operations.
+
+### Changed
+
+- **Bundled agent upgraded to omp 18.3.0**, including background-job coordination, wait/protocol support, explicit process cancellation, and Apple Foundation Models discovery on supported Apple Silicon systems.
+- **Execution details stay bounded**: coordination cards summarize status and expose focused scrollable details without taking over the transcript.
+
+### Fixed
+
+- **Upstream protocol parity**: GUI tool dispatch now recognizes the current `wait` and internal `proc://`/`agent://` protocols while retaining legacy `hub` transcript rendering.
+
+## [0.9.8] - 2026-09-22
+
+### Added
+
+- **Bilingual feature tour**: refreshed English and Chinese documentation includes 24 matching-language screenshots captured with isolated, synthetic demo data.
+
+### Changed
+
+- **Bundled agent upgraded to omp 18.2.8** with expanded browser automation, buffered cloud transcription, faster credential scanning, and more reliable aborted LSP requests.
+- **Smoother interactions**: streaming Markdown, common dialogs, popovers, hover feedback, and panel entrances stay visually stable as content updates.
+
+### Fixed
+
+- **Model and provider refresh**: switching models, signing in or out, and adding, editing, or removing custom providers update the originating session's model and account views without stale responses undoing newer state.
+- **Live accounting**: context, cost, and cache values refresh during runs; measured context usage remains visible when model capacity is unknown.
+- **Conversation follow**: new output follows the viewport at the bottom without pulling readers out of scrollback, and jump-to-latest reliably resumes following.
+- **Settings and dialogs**: IME-safe keyboard handling, layered Escape behavior, focus recovery, confirmation dialogs, and scrollable layouts make controls more predictable.
+- **Packaged startup and recovery**: bundled configuration dependencies are available at launch, custom-provider writes are atomic, and off-screen saved windows recover to usable bounds.
+- **Statistics resilience**: unexpected list responses no longer crash the statistics view.
+
+## [0.9.7] - 2026-09-21
+
+### Added
+
+- **Bundled agent upgraded to omp 18.2.7**: semantic `find` search, `^model` delegation, configurable specialist model roles, batch evaluation/judgment, and `omp stream` livestreaming in the bundled Core.
+- **Model Roles window** now lists backend-filtered eligible models grouped by kind, split into chat and specialized sections, and hides roles the backend marks hidden.
+- **Delegation chips**: models tagged with `^` in a message render as chips on your message in the transcript.
+- **Chinese labels** for all Core settings and options newly added upstream (find, generation rate, stream, judgment, title spinner, spelling, and more).
+
+### Changed
+
+- The `/drop` session command is now `/delete` in the command menu (the `drop` alias still works).
+
+### Fixed
+
+- **Stats dashboard** no longer shows a dead-end "stats unavailable" error while the bundled stats server finishes its first-time re-index after an upgrade; it now stays in a loading state and recovers on its own.
+
+## [0.9.6] - 2026-09-14
+
+### Changed
+
+- **Bundled agent upgraded to omp 18.1.20** with the latest upstream provider, collaboration, speculative execution, and tool interaction updates.
+
 ## [0.9.5] - 2026-09-07
 
 ### Fixed
